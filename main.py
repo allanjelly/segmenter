@@ -6,8 +6,9 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPointLocator, vtkPolyData
-from vtkmodules.vtkCommonCore import vtkPoints
-from vtkmodules.vtkIOLegacy import vtkPolyDataReader
+from vtkmodules.vtkCommonCore import vtkIntArray, vtkPoints
+from vtkmodules.vtkIOLegacy import vtkPolyDataReader, vtkPolyDataWriter
+from vtkmodules.vtkFiltersCore import vtkAppendPolyData
 from vtkmodules.vtkFiltersSources import vtkSphereSource
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
 from vtkmodules.vtkCommonCore import vtkLookupTable
@@ -52,9 +53,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.resize(1200, 800)
         self._mesh_actor = None
         self._mesh_mapper = None
+        self._overlay_actor = None
+        self._overlay_mapper = None
+        self._overlay_polydata = None
         self._initial_file = initial_file
         self._pending_file = None
         self._polydata = None
+        self._mesh_file_path = None
+        self._last_segment_ids = None
+        self._last_segment_error = None
         self._point_locator = None
         self._geo_locator = None
         self._renderer = vtkRenderer()
@@ -100,6 +107,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._mesh_info = QtWidgets.QLabel("No mesh loaded", mesh_group)
         self._mesh_info.setWordWrap(True)
         mesh_layout.addWidget(self._mesh_info)
+        self._overlay_button = QtWidgets.QPushButton("Load epicardium", mesh_group)
+        self._overlay_button.clicked.connect(self._select_overlay_mesh)
+        mesh_layout.addWidget(self._overlay_button)
+        self._overlay_toggle = QtWidgets.QCheckBox("Show epicardium", mesh_group)
+        self._overlay_toggle.setChecked(True)
+        self._overlay_toggle.setEnabled(False)
+        self._overlay_toggle.toggled.connect(self._toggle_overlay_visibility)
+        mesh_layout.addWidget(self._overlay_toggle)
         layout.addWidget(mesh_group)
 
         landmarks_group = QtWidgets.QGroupBox("Landmarks", panel)
@@ -113,14 +128,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._steps_list.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         landmarks_layout.addWidget(self._steps_list)
 
-        buttons_layout = QtWidgets.QHBoxLayout()
-        self._prev_button = QtWidgets.QPushButton("Prev", landmarks_group)
-        self._next_button = QtWidgets.QPushButton("Next", landmarks_group)
-        self._prev_button.clicked.connect(self._go_prev_step)
-        self._next_button.clicked.connect(self._go_next_step)
-        buttons_layout.addWidget(self._prev_button)
-        buttons_layout.addWidget(self._next_button)
-        landmarks_layout.addLayout(buttons_layout)
         layout.addWidget(landmarks_group)
 
         controls_group = QtWidgets.QGroupBox("Controls", panel)
@@ -159,6 +166,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._error_box.setMinimumHeight(40)
         errors_layout.addWidget(self._error_box)
         layout.addWidget(errors_group)
+
+        self._save_results_button = QtWidgets.QPushButton("Save results", panel)
+        self._save_results_button.clicked.connect(self._save_results)
+        layout.addWidget(self._save_results_button)
 
         layout.addStretch(1)
 
@@ -199,6 +210,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         self._polydata = polydata
+        self._mesh_file_path = file_path
         self._point_locator = vtkPointLocator()
         self._point_locator.SetDataSet(polydata)
         self._point_locator.BuildLocator()
@@ -207,6 +219,36 @@ class MainWindow(QtWidgets.QMainWindow):
         self._display_polydata(polydata)
         self._update_mesh_info(polydata, file_path)
         self._append_message(f"Mesh loaded: {Path(file_path).name}")
+
+    def _select_overlay_mesh(self) -> None:
+        options = QtWidgets.QFileDialog.Options()
+        options |= QtWidgets.QFileDialog.DontUseNativeDialog
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open Reference Mesh",
+            "",
+            "VTK Files (*.vtk)",
+            options=options,
+        )
+        if not file_path:
+            return
+        self._load_overlay_mesh(file_path)
+
+    def _load_overlay_mesh(self, file_path: str) -> None:
+        polydata = self._read_vtk_polydata(Path(file_path))
+        if polydata is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Load Failed",
+                "Failed to read VTK polydata.",
+            )
+            return
+        self._display_overlay_polydata(polydata)
+        self._overlay_polydata = polydata
+        if self._overlay_toggle is not None:
+            self._overlay_toggle.setEnabled(True)
+            self._overlay_toggle.setChecked(True)
+        self._append_message(f"Reference mesh loaded: {Path(file_path).name}")
 
     def _read_vtk_polydata(self, path: Path):
         reader = vtkPolyDataReader()
@@ -237,6 +279,32 @@ class MainWindow(QtWidgets.QMainWindow):
         self._renderer.AddActor(actor)
         self._renderer.ResetCamera()
         self._vtk_widget.GetRenderWindow().Render()
+
+    def _display_overlay_polydata(self, polydata) -> None:
+        mapper = vtkPolyDataMapper()
+        mapper.SetInputData(polydata)
+        mapper.SetScalarVisibility(False)
+
+        actor = vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(0.9, 0.9, 0.9)
+        actor.GetProperty().SetOpacity(0.25)
+        actor.SetPickable(False)
+
+        if self._overlay_actor is not None:
+            self._renderer.RemoveActor(self._overlay_actor)
+
+        self._overlay_actor = actor
+        self._overlay_mapper = mapper
+        self._renderer.AddActor(actor)
+        self._vtk_widget.GetRenderWindow().Render()
+
+    def _toggle_overlay_visibility(self, visible: bool) -> None:
+        if self._overlay_actor is None:
+            return
+        self._overlay_actor.SetVisibility(1 if visible else 0)
+        if self._vtk_widget is not None:
+            self._vtk_widget.GetRenderWindow().Render()
 
     def _update_mesh_info(self, polydata, file_path: str) -> None:
         num_points = polydata.GetNumberOfPoints()
@@ -343,6 +411,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._set_error_message(error_message)
         else:
             self._set_error_message("")
+        self._last_segment_ids = segment_ids
+        self._last_segment_error = error_message
         self._show_failure_debug(debug_points)
         if segment_ids is None:
             return
@@ -350,6 +420,76 @@ class MainWindow(QtWidgets.QMainWindow):
         self._append_message("Regions calculated")
         if self._vtk_widget is not None:
             self._vtk_widget.GetRenderWindow().Render()
+
+    def _save_results(self) -> None:
+        if self._polydata is None or self._overlay_polydata is None:
+            self._set_error_message("Load both endocardium and epicardium meshes before saving")
+            return
+        if not self._mesh_file_path:
+            self._set_error_message("Missing endocardium file path; reload the mesh before saving")
+            return
+
+        segment_ids = self._last_segment_ids
+        segment_error = self._last_segment_error
+        all_segments_ok = segment_ids is not None and not segment_error
+
+        output_dir = Path(self._mesh_file_path).parent
+        base_name = Path(self._mesh_file_path).stem
+        suffix = "_results.vtk" if all_segments_ok else "_error.vtk"
+        output_path = output_dir / f"{base_name}{suffix}"
+
+        try:
+            endo_copy = vtkPolyData()
+            endo_copy.DeepCopy(self._polydata)
+            region_end = self._build_region_array(endo_copy, segment_ids)
+            endo_copy.GetPointData().AddArray(region_end)
+            endo_copy.GetPointData().SetScalars(region_end)
+
+            epi_copy = vtkPolyData()
+            epi_copy.DeepCopy(self._overlay_polydata)
+            region_epi = vtkIntArray()
+            region_epi.SetName("Regions")
+            region_epi.SetNumberOfComponents(1)
+            region_epi.SetNumberOfTuples(epi_copy.GetNumberOfPoints())
+            for i in range(epi_copy.GetNumberOfPoints()):
+                region_epi.SetValue(i, 0)
+            epi_copy.GetPointData().AddArray(region_epi)
+            epi_copy.GetPointData().SetScalars(region_epi)
+
+            append = vtkAppendPolyData()
+            append.AddInputData(endo_copy)
+            append.AddInputData(epi_copy)
+            append.Update()
+
+            writer = vtkPolyDataWriter()
+            writer.SetFileName(str(output_path))
+            writer.SetInputData(append.GetOutput())
+            if writer.Write() != 1:
+                raise RuntimeError("VTK writer reported failure")
+        except Exception as exc:
+            self._set_error_message(f"Save failed: {exc}")
+            return
+
+        self._append_message(f"Saved results: {output_path}")
+
+    def _build_region_array(self, polydata: vtkPolyData, segment_ids) -> vtkIntArray:
+        region = vtkIntArray()
+        region.SetName("Regions")
+        region.SetNumberOfComponents(1)
+        region.SetNumberOfTuples(polydata.GetNumberOfPoints())
+
+        source = segment_ids
+        if source is None:
+            source = polydata.GetPointData().GetArray("SegmentId")
+
+        if source is None:
+            for i in range(polydata.GetNumberOfPoints()):
+                region.SetValue(i, 0)
+            return region
+
+        for i in range(polydata.GetNumberOfPoints()):
+            region.SetValue(i, int(source.GetValue(i)))
+        return region
 
     def _on_left_button_press(self, obj, _event) -> None:
         if self._polydata is None:
@@ -606,7 +746,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 for key in ("EF_aniso", "FH_aniso", "HI_aniso", "IE_aniso"):
                     self._remove_geodesic(key)
             else:
-                penalty_strength = 5.0
+                penalty_strength = 2.0
                 aniso_specs = (
                     ("EF_aniso", "E", "F", (0.9, 0.2, 0.2)),
                     ("FH_aniso", "F", "H", (0.2, 0.9, 0.2)),
