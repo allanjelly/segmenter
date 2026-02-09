@@ -87,6 +87,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._vtk_widget.GetRenderWindow().AddRenderer(self._renderer)
         self._setup_shortcuts()
+        self.statusBar().showMessage("")
 
     def _build_left_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget(self)
@@ -218,7 +219,7 @@ class MainWindow(QtWidgets.QMainWindow):
         mapper.SetScalarModeToUsePointData()
         mapper.SelectColorArray("SegmentId")
         mapper.SetLookupTable(self._segment_lut)
-        mapper.SetScalarRange(0, 8)
+        mapper.SetScalarRange(0, 9)
         mapper.SetScalarVisibility(True)
 
         actor = vtkActor()
@@ -251,7 +252,10 @@ class MainWindow(QtWidgets.QMainWindow):
             {"key": "F", "label": "F: Mitral annulus 1 o'clock"},
             {"key": "H", "label": "H: Mitral annulus 4 o'clock"},
             {"key": "I", "label": "I: Mitral annulus 7 o'clock"},
-            {"key": "LAA", "label": "LAA: Appendage orifice"},
+            {"key": "LAA1", "label": "LAA1: Appendage orifice point 1"},
+            {"key": "LAA2", "label": "LAA2: Appendage orifice point 2"},
+            {"key": "X1", "label": "X1: LAA/LSPV cut point 1"},
+            {"key": "X2", "label": "X2: LAA/LSPV cut point 2"},
         ]
 
     def _populate_steps(self) -> None:
@@ -481,6 +485,83 @@ class MainWindow(QtWidgets.QMainWindow):
             self._create_simple_geodesic("DI", "D", "I", (0.7, 0.9, 0.3), 6.0)
             changed_geodesics.add("DI")
 
+        if (
+            "LAA1" in self._landmarks
+            and "LAA2" in self._landmarks
+            and "D" in self._landmarks
+            and "F" in self._landmarks
+            and (
+                {"LAA1", "LAA2", "D", "F"} & changed_landmarks
+                or not {"LAA1_LAA2_anterior", "LAA1_LAA2_posterior"}.issubset(
+                    self._geodesic_lines.keys()
+                )
+            )
+        ):
+            self._remove_geodesic("LAA1_LAA2_anterior")
+            self._remove_geodesic("LAA1_LAA2_posterior")
+            primary_key, primary, alternate_key, alternate = create_pair_geodesics(
+                self._polydata,
+                self._geo_locator,
+                self._landmarks,
+                "LAA1",
+                "LAA2",
+                ("LAA1", "LAA2", "D"),
+                anterior_ref_key="F",
+                plane_origin_key="D",
+            )
+            if primary_key.endswith("_anterior"):
+                resolved_primary = "LAA1_LAA2_anterior"
+                resolved_alternate = "LAA1_LAA2_posterior"
+            else:
+                resolved_primary = "LAA1_LAA2_posterior"
+                resolved_alternate = "LAA1_LAA2_anterior"
+            self._store_geodesic_actor(resolved_primary, primary.polyline, (0.9, 0.6, 0.1), 6.0)
+            self._append_message(f"Geodesic {resolved_primary} updated")
+            changed_geodesics.add(resolved_primary)
+            if alternate is None:
+                self._set_error_message("Alternate LAA1_LAA2 geodesic not found")
+            else:
+                self._store_geodesic_actor(resolved_alternate, alternate.polyline, (0.2, 0.7, 0.2), 6.0)
+                self._append_message(f"Geodesic {resolved_alternate} updated")
+                changed_geodesics.add(resolved_alternate)
+
+        if "X1" not in self._landmarks or "X2" not in self._landmarks:
+            self._remove_geodesic("X1_X2_anterior")
+            self._remove_geodesic("X1_X2_posterior")
+        elif (
+            {"X1", "X2", "D", "F"} & changed_landmarks
+            or not {"X1_X2_anterior", "X1_X2_posterior"}.issubset(
+                self._geodesic_lines.keys()
+            )
+        ):
+            self._remove_geodesic("X1_X2_anterior")
+            self._remove_geodesic("X1_X2_posterior")
+            primary_key, primary, alternate_key, alternate = create_pair_geodesics(
+                self._polydata,
+                self._geo_locator,
+                self._landmarks,
+                "X1",
+                "X2",
+                ("X1", "X2", "D"),
+                anterior_ref_key="F",
+                plane_origin_key="D",
+            )
+            if primary_key.endswith("_anterior"):
+                resolved_primary = "X1_X2_anterior"
+                resolved_alternate = "X1_X2_posterior"
+            else:
+                resolved_primary = "X1_X2_posterior"
+                resolved_alternate = "X1_X2_anterior"
+            self._store_geodesic_actor(resolved_primary, primary.polyline, (0.8, 0.8, 0.2), 6.0)
+            self._append_message(f"Geodesic {resolved_primary} updated")
+            changed_geodesics.add(resolved_primary)
+            if alternate is None:
+                self._set_error_message("Alternate X1_X2 geodesic not found")
+            else:
+                self._store_geodesic_actor(resolved_alternate, alternate.polyline, (0.2, 0.8, 0.8), 6.0)
+                self._append_message(f"Geodesic {resolved_alternate} updated")
+                changed_geodesics.add(resolved_alternate)
+
         has_ma_points = {"E", "F", "H", "I"}.issubset(self._landmarks.keys())
         if not has_ma_points:
             for key in ("EF_aniso", "FH_aniso", "HI_aniso", "IE_aniso"):
@@ -501,7 +582,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 for key in ("EF_aniso", "FH_aniso", "HI_aniso", "IE_aniso"):
                     self._remove_geodesic(key)
             else:
-                penalty_strength = 10.0
+                penalty_strength = 20.0
                 aniso_specs = (
                     ("EF_aniso", "E", "F", (0.9, 0.2, 0.2)),
                     ("FH_aniso", "F", "H", (0.2, 0.9, 0.2)),
@@ -627,7 +708,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_segment_lut(self) -> vtkLookupTable:
         lut = vtkLookupTable()
-        lut.SetNumberOfTableValues(9)
+        lut.SetNumberOfTableValues(10)
         lut.Build()
         lut.SetTableValue(0, 0.6, 0.6, 0.6, 1.0)
         lut.SetTableValue(1, 0.89, 0.10, 0.11, 1.0)
@@ -638,6 +719,7 @@ class MainWindow(QtWidgets.QMainWindow):
         lut.SetTableValue(6, 0.65, 0.34, 0.16, 1.0)
         lut.SetTableValue(7, 0.97, 0.51, 0.75, 1.0)
         lut.SetTableValue(8, 0.0, 1.0, 0.0, 1.0)
+        lut.SetTableValue(9, 0.45, 0.45, 0.45, 1.0)
         return lut
 
     def _update_segments(self, changed_geodesics: set[str] | None = None) -> None:
@@ -670,7 +752,19 @@ class MainWindow(QtWidgets.QMainWindow):
         point_data = self._polydata.GetPointData()
         point_data.AddArray(segment_ids)
         point_data.SetScalars(segment_ids)
-        self._mesh_mapper.SetScalarRange(0, 8)
+        self._mesh_mapper.SetScalarRange(0, 9)
+
+        required_keys = {"A", "B", "C", "D", "E", "F", "H", "I", "LAA1", "LAA2"}
+        if required_keys.issubset(self._landmarks.keys()):
+            unassigned = 0
+            for i in range(segment_ids.GetNumberOfTuples()):
+                if segment_ids.GetValue(i) == 0:
+                    unassigned += 1
+            self._segment_lut.SetTableValue(0, 1.0, 1.0, 1.0, 1.0)
+            self.statusBar().showMessage(f"Unassigned vertices: {unassigned}")
+        else:
+            self._segment_lut.SetTableValue(0, 0.6, 0.6, 0.6, 1.0)
+            self.statusBar().showMessage("")
 
 
 def main() -> None:

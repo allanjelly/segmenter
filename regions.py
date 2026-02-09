@@ -246,6 +246,25 @@ def _seed_fallback_candidates(
     return candidates
 
 
+def _assign_boundary_vertices(
+    segment_ids: vtkIntArray,
+    adjacency: list[set[int]],
+    boundary_ids: set[int],
+) -> None:
+    for vertex_id in boundary_ids:
+        if segment_ids.GetValue(vertex_id) != 0:
+            continue
+        neighbor_counts: dict[int, int] = {}
+        for neighbor in adjacency[vertex_id]:
+            seg_id = segment_ids.GetValue(neighbor)
+            if seg_id == 0:
+                continue
+            neighbor_counts[seg_id] = neighbor_counts.get(seg_id, 0) + 1
+        if neighbor_counts:
+            best_seg = max(neighbor_counts.items(), key=lambda item: (item[1], -item[0]))[0]
+            segment_ids.SetValue(vertex_id, best_seg)
+
+
 def compute_segment_ids(
     surface: vtkPolyData,
     landmarks: dict[str, Sequence[float]],
@@ -297,6 +316,7 @@ def compute_segment_ids_cached(
     deps_present_cache: dict[int, bool] = cache["deps_present"]
     debug_messages: dict[int, str] = cache.setdefault("debug_messages", {})
 
+
     if changed_geodesics is not None:
         changed_geodesics = set(changed_geodesics)
 
@@ -329,6 +349,7 @@ def compute_segment_ids_cached(
             cache["debug"] = " | ".join(ordered)
         else:
             cache.pop("debug", None)
+
 
     def compute_segment_with_fallback(
         seg_id: int,
@@ -407,7 +428,9 @@ def compute_segment_ids_cached(
         deps_present_cache[seg_id] = present
         return present, changed
 
-    seg1_deps = ("AB_anterior", "AB_posterior")
+    seg1_deps = ["AB_anterior", "AB_posterior"]
+    if {"X1_X2_anterior", "X1_X2_posterior"}.issubset(geodesic_lines.keys()):
+        seg1_deps.extend(["X1_X2_anterior", "X1_X2_posterior"])
     seg1_present, seg1_changed = compute_segment_with_fallback(
         1,
         seg1_deps,
@@ -478,7 +501,26 @@ def compute_segment_ids_cached(
     if segments.get(4):
         blocked |= segments[4] or set()
 
-    seg6_deps = ("AB_anterior", "AF", "BH", "FH_aniso")
+    seg5_deps = ["LAA1_LAA2_anterior", "LAA1_LAA2_posterior"]
+    if {"X1_X2_anterior", "X1_X2_posterior"}.issubset(geodesic_lines.keys()):
+        seg5_deps.extend(["X1_X2_anterior", "X1_X2_posterior"])
+    seg5_present, seg5_changed = compute_segment_with_fallback(
+        5,
+        seg5_deps,
+        opposite_key="D",
+        seed_key="LAA1",
+        blocked_ids=blocked if blocked else None,
+        upstream_changed=seg4_changed,
+        allow_fallback=False,
+        report_missing_deps=True,
+        required_landmarks={"LAA1", "LAA2", "D", "F"},
+    )
+    if segments.get(5):
+        blocked |= segments[5] or set()
+
+    seg6_deps = ["AB_anterior", "AF", "BH", "FH_aniso"]
+    if {"LAA1_LAA2_anterior", "LAA1_LAA2_posterior"}.issubset(geodesic_lines.keys()):
+        seg6_deps.extend(["LAA1_LAA2_anterior", "LAA1_LAA2_posterior"])
     seg6_present, seg6_changed = compute_segment_with_fallback(
         6,
         seg6_deps,
@@ -537,6 +579,35 @@ def compute_segment_ids_cached(
         required_landmarks={"A", "B", "C", "D", "E", "F", "H", "I"},
     )
 
+    blocked = set()
+    if segments.get(1):
+        blocked |= segments[1] or set()
+    if segments.get(2):
+        blocked |= segments[2] or set()
+    if segments.get(3):
+        blocked |= segments[3] or set()
+    if segments.get(4):
+        blocked |= segments[4] or set()
+    if segments.get(5):
+        blocked |= segments[5] or set()
+    if segments.get(6):
+        blocked |= segments[6] or set()
+    if segments.get(7):
+        blocked |= segments[7] or set()
+    if segments.get(8):
+        blocked |= segments[8] or set()
+
+    seg9_deps = ("EF_aniso", "FH_aniso", "HI_aniso", "IE_aniso")
+    seg9_present, seg9_changed = compute_segment_with_fallback(
+        9,
+        seg9_deps,
+        opposite_key="H",
+        seed_key="E",
+        blocked_ids=None,
+        upstream_changed=seg8_changed,
+        required_landmarks={"E", "F", "H", "I"},
+    )
+
     segment_updates: dict[int, bool] = {}
     if seg1_changed:
         segment_updates[1] = segments.get(1) is not None
@@ -546,19 +617,24 @@ def compute_segment_ids_cached(
         segment_updates[3] = segments.get(3) is not None
     if seg4_changed:
         segment_updates[4] = segments.get(4) is not None
+    if seg5_changed:
+        segment_updates[5] = segments.get(5) is not None
     if seg6_changed:
         segment_updates[6] = segments.get(6) is not None
     if seg7_changed:
         segment_updates[7] = segments.get(7) is not None
     if seg8_changed:
         segment_updates[8] = segments.get(8) is not None
+    if seg9_changed:
+        segment_updates[9] = segments.get(9) is not None
 
     cache["segment_updates"] = segment_updates
 
     segment_changed = bool(segment_updates)
     cached_ids = cache.get("segment_ids")
     if not segment_changed and cached_ids is not None:
-        return cached_ids, cache
+        if not changed_geodesics:
+            return cached_ids, cache
 
     segment_ids = vtkIntArray()
     segment_ids.SetName("SegmentId")
@@ -586,6 +662,11 @@ def compute_segment_ids_cached(
             if segment_ids.GetValue(vertex_id) == 0:
                 segment_ids.SetValue(vertex_id, 4)
 
+    if segments.get(5):
+        for vertex_id in segments[5] or []:
+            if segment_ids.GetValue(vertex_id) == 0:
+                segment_ids.SetValue(vertex_id, 5)
+
     if segments.get(6):
         for vertex_id in segments[6] or []:
             if segment_ids.GetValue(vertex_id) == 0:
@@ -600,6 +681,20 @@ def compute_segment_ids_cached(
         for vertex_id in segments[8] or []:
             if segment_ids.GetValue(vertex_id) == 0:
                 segment_ids.SetValue(vertex_id, 8)
+
+    if segments.get(9):
+        for vertex_id in segments[9] or []:
+            if segment_ids.GetValue(vertex_id) == 0:
+                segment_ids.SetValue(vertex_id, 9)
+
+    boundary_ids = _collect_boundary_ids(
+        locator,
+        landmarks,
+        geodesic_lines,
+        tuple(geodesic_lines.keys()),
+    )
+    if boundary_ids:
+        _assign_boundary_vertices(segment_ids, adjacency, boundary_ids)
 
     cache["segment_ids"] = segment_ids
     return segment_ids, cache
