@@ -248,6 +248,9 @@ def _collect_failure_debug(
     if opposite_seed is None:
         return {
             "boundary_ids": list(boundary_ids),
+            "boundary_count": len(boundary_ids),
+            "blocked_count": None,
+            "total_points": len(adjacency),
             "seed_id": seed_id,
             "opposite_id": opposite_id,
             "opposite_seed_id": None,
@@ -268,6 +271,9 @@ def _collect_failure_debug(
 
     return {
         "boundary_ids": list(boundary_ids),
+        "boundary_count": len(boundary_ids),
+        "blocked_count": len(seed_blocked),
+        "total_points": len(adjacency),
         "seed_id": seed_id,
         "opposite_id": opposite_id,
         "opposite_seed_id": opposite_seed,
@@ -306,6 +312,47 @@ def _polyline_midpoint_point(polyline: vtkPolyData) -> tuple[float, float, float
     return points.GetPoint(count // 2)
 
 
+def _collect_available_boundary_ids(
+    locator,
+    geodesic_lines: dict[str, vtkPolyData],
+    boundary_keys: Sequence[str],
+) -> set[int]:
+    boundary_ids: set[int] = set()
+    for key in boundary_keys:
+        polyline = geodesic_lines.get(key)
+        if polyline is None:
+            continue
+        points = polyline.GetPoints()
+        if points is None:
+            continue
+        lines = polyline.GetLines()
+        if lines is None:
+            continue
+        lines.InitTraversal()
+        id_list = vtkIdList()
+        while lines.GetNextCell(id_list):
+            if id_list.GetNumberOfIds() < 2:
+                continue
+            for i in range(1, id_list.GetNumberOfIds()):
+                p0 = points.GetPoint(id_list.GetId(i - 1))
+                p1 = points.GetPoint(id_list.GetId(i))
+                boundary_ids.add(locator.FindClosestPoint(p0))
+                boundary_ids.add(locator.FindClosestPoint(p1))
+                mid1 = (
+                    p0[0] + (p1[0] - p0[0]) * (1.0 / 3.0),
+                    p0[1] + (p1[1] - p0[1]) * (1.0 / 3.0),
+                    p0[2] + (p1[2] - p0[2]) * (1.0 / 3.0),
+                )
+                mid2 = (
+                    p0[0] + (p1[0] - p0[0]) * (2.0 / 3.0),
+                    p0[1] + (p1[1] - p0[1]) * (2.0 / 3.0),
+                    p0[2] + (p1[2] - p0[2]) * (2.0 / 3.0),
+                )
+                boundary_ids.add(locator.FindClosestPoint(mid1))
+                boundary_ids.add(locator.FindClosestPoint(mid2))
+    return boundary_ids
+
+
 def _assign_boundary_vertices(
     segment_ids: vtkIntArray,
     adjacency: list[set[int]],
@@ -325,93 +372,55 @@ def _assign_boundary_vertices(
             segment_ids.SetValue(vertex_id, best_seg)
 
 
+def _build_segment_ids(
+    surface: vtkPolyData,
+    segments: dict[int, set[int] | None],
+    adjacency: list[set[int]],
+    locator,
+    landmarks: dict[str, Sequence[float]],
+    geodesic_lines: dict[str, vtkPolyData],
+) -> vtkIntArray:
+    segment_ids = vtkIntArray()
+    segment_ids.SetName("SegmentId")
+    segment_ids.SetNumberOfComponents(1)
+    segment_ids.SetNumberOfTuples(surface.GetNumberOfPoints())
+    for i in range(surface.GetNumberOfPoints()):
+        segment_ids.SetValue(i, 0)
+
+    for seg_id in range(1, 10):
+        if segments.get(seg_id):
+            for vertex_id in segments[seg_id] or []:
+                if seg_id == 1 or segment_ids.GetValue(vertex_id) == 0:
+                    segment_ids.SetValue(vertex_id, seg_id)
+
+    boundary_ids = _collect_boundary_ids(
+        locator,
+        landmarks,
+        geodesic_lines,
+        tuple(geodesic_lines.keys()),
+    )
+    if boundary_ids:
+        _assign_boundary_vertices(segment_ids, adjacency, boundary_ids)
+    return segment_ids
+
+
 def compute_segment_ids(
     surface: vtkPolyData,
     landmarks: dict[str, Sequence[float]],
     geodesic_lines: dict[str, vtkPolyData],
-) -> vtkIntArray | None:
-    segment_ids, _ = compute_segment_ids_cached(
-        surface,
-        landmarks,
-        geodesic_lines,
-        cache=None,
-        changed_geodesics=None,
-    )
-    return segment_ids
-
-
-def compute_segment_ids_cached(
-    surface: vtkPolyData,
-    landmarks: dict[str, Sequence[float]],
-    geodesic_lines: dict[str, vtkPolyData],
-    cache: dict | None,
-    changed_geodesics: set[str] | None,
-) -> tuple[vtkIntArray | None, dict | None]:
+) -> tuple[vtkIntArray | None, str | None, dict | None]:
     if surface is None:
-        return None, cache
+        return None, "No surface loaded", None
     if not {"A", "B", "C", "D", "E", "F"}.issubset(landmarks.keys()):
-        return None, cache
+        return None, "Missing base landmarks", None
     if not {"AB_anterior", "AB_posterior"}.issubset(geodesic_lines.keys()):
-        return None, cache
+        return None, "Missing AB geodesics", None
     if not {"CD_anterior", "CD_posterior"}.issubset(geodesic_lines.keys()):
-        return None, cache
+        return None, "Missing CD geodesics", None
 
-    if cache is None:
-        cache = {}
-    if cache.get("surface_points") != surface.GetNumberOfPoints():
-        cache = {
-            "surface_points": surface.GetNumberOfPoints(),
-            "adjacency": _build_point_adjacency(surface),
-            "locator": build_point_locator(surface),
-            "segments": {},
-            "deps_present": {},
-            "segment_ids": None,
-            "debug_messages": {},
-            "segment_updates": {},
-        }
-
-    adjacency = cache["adjacency"]
-    locator = cache["locator"]
-    segments: dict[int, set[int] | None] = cache["segments"]
-    deps_present_cache: dict[int, bool] = cache["deps_present"]
-    debug_messages: dict[int, str] = cache.setdefault("debug_messages", {})
-
-
-
-    if changed_geodesics is not None:
-        changed_geodesics = set(changed_geodesics)
-
-    segment_changed = False
-
-    def deps_present(deps: Sequence[str]) -> bool:
-        return all(key in geodesic_lines for key in deps)
-
-    def should_recompute(seg_id: int, deps: Sequence[str], present: bool, upstream_changed: bool) -> bool:
-        if not present:
-            return False
-        if seg_id not in segments:
-            return True
-        if deps_present_cache.get(seg_id) != present:
-            return True
-        if upstream_changed:
-            return True
-        if changed_geodesics is None:
-            return True
-        return any(key in changed_geodesics for key in deps)
-
-    def update_debug_message(seg_id: int, message: str | None) -> None:
-        if message is None:
-            debug_messages.pop(seg_id, None)
-        else:
-            debug_messages[seg_id] = message
-
-        if debug_messages:
-            ordered = [debug_messages[key] for key in sorted(debug_messages.keys())]
-            cache["debug"] = " | ".join(ordered)
-        else:
-            cache.pop("debug", None)
-            cache.pop("debug_points", None)
-
+    adjacency = _build_point_adjacency(surface)
+    locator = build_point_locator(surface)
+    segments: dict[int, set[int] | None] = {}
 
     def compute_segment_with_fallback(
         seg_id: int,
@@ -419,28 +428,72 @@ def compute_segment_ids_cached(
         opposite_key: str,
         seed_key: str,
         blocked_ids: set[int] | None,
-        upstream_changed: bool,
         required_landmarks: set[str] | None = None,
         allow_fallback: bool = True,
         report_missing_deps: bool = True,
-    ) -> tuple[bool, bool]:
-        present = deps_present(deps)
-        changed = False
+    ) -> tuple[set[int] | None, str | None, dict | None]:
+        if required_landmarks is not None and not required_landmarks.issubset(landmarks.keys()):
+            return None, None, None
+
+        present = all(key in geodesic_lines for key in deps)
+        if not present:
+            if report_missing_deps:
+                missing = [key for key in deps if key not in geodesic_lines]
+                if missing:
+                    message = (
+                        f"Segment {seg_id} skipped: missing boundary geodesics "
+                        f"({', '.join(missing)})"
+                    )
+                else:
+                    message = f"Segment {seg_id} skipped: missing boundary geodesics"
+                debug_points = {
+                    "boundary_ids": list(_collect_available_boundary_ids(locator, geodesic_lines, deps)),
+                    "seed_id": None,
+                    "opposite_id": None,
+                    "seed_candidate_id": None,
+                    "opposite_seed_id": None,
+                }
+                return None, message, debug_points
+            return None, None, None
+
         seed_point = None
-        if present and deps:
+        if deps:
             boundary_key = deps[0]
             boundary_polyline = geodesic_lines.get(boundary_key)
             if boundary_polyline is not None:
                 seed_point = _polyline_midpoint_point(boundary_polyline)
-        if required_landmarks is not None and not required_landmarks.issubset(landmarks.keys()):
-            segments[seg_id] = None
-            changed = deps_present_cache.get(seg_id) != present
-            update_debug_message(seg_id, None)
-            deps_present_cache[seg_id] = present
-            return present, changed
-        if present and should_recompute(seg_id, deps, present, upstream_changed=upstream_changed):
-            segments[seg_id] = _collect_segment_component(
-                surface,
+
+        segment = _collect_segment_component(
+            surface,
+            adjacency,
+            locator,
+            landmarks,
+            geodesic_lines,
+            deps,
+            opposite_key=opposite_key,
+            seed_key=seed_key,
+            blocked_ids=blocked_ids if blocked_ids else None,
+            seed_point=seed_point,
+        )
+        if segment is None and allow_fallback:
+            for candidate in _seed_fallback_candidates(landmarks, seed_key, opposite_key):
+                segment = _collect_segment_component(
+                    surface,
+                    adjacency,
+                    locator,
+                    landmarks,
+                    geodesic_lines,
+                    deps,
+                    opposite_key=opposite_key,
+                    seed_key=seed_key,
+                    blocked_ids=blocked_ids if blocked_ids else None,
+                    seed_point=candidate,
+                )
+                if segment is not None:
+                    break
+
+        if segment is None:
+            debug_points = _collect_failure_debug(
                 adjacency,
                 locator,
                 landmarks,
@@ -451,89 +504,93 @@ def compute_segment_ids_cached(
                 blocked_ids=blocked_ids if blocked_ids else None,
                 seed_point=seed_point,
             )
-            if segments[seg_id] is None and allow_fallback:
-                for seed_point in _seed_fallback_candidates(landmarks, seed_key, opposite_key):
-                    segments[seg_id] = _collect_segment_component(
-                        surface,
-                        adjacency,
-                        locator,
-                        landmarks,
-                        geodesic_lines,
-                        deps,
-                        opposite_key=opposite_key,
-                        seed_key=seed_key,
-                        blocked_ids=blocked_ids if blocked_ids else None,
-                        seed_point=seed_point,
-                    )
-                    if segments[seg_id] is not None:
-                        break
-            changed = True
-            if segments[seg_id] is None:
-                cache["debug_points"] = _collect_failure_debug(
-                    adjacency,
-                    locator,
-                    landmarks,
-                    geodesic_lines,
-                    deps,
-                    opposite_key=opposite_key,
-                    seed_key=seed_key,
-                    blocked_ids=blocked_ids if blocked_ids else None,
-                    seed_point=seed_point,
-                )
-                update_debug_message(
-                    seg_id,
-                    _diagnose_segment_failure(
-                        seg_id,
-                        adjacency,
-                        locator,
-                        landmarks,
-                        geodesic_lines,
-                        deps,
-                        opposite_key=opposite_key,
-                        seed_key=seed_key,
-                        blocked_ids=blocked_ids if blocked_ids else None,
-                        seed_point=seed_point,
-                    ),
-                )
-            else:
-                update_debug_message(seg_id, None)
-        elif not present:
-            segments[seg_id] = None
-            changed = deps_present_cache.get(seg_id) != present
-            if report_missing_deps:
-                update_debug_message(seg_id, f"Segment {seg_id} skipped: missing boundary geodesics")
+            if debug_points is None:
+                debug_points = {
+                    "boundary_ids": list(_collect_available_boundary_ids(locator, geodesic_lines, deps)),
+                    "boundary_count": None,
+                    "blocked_count": None,
+                    "total_points": None,
+                    "seed_id": None,
+                    "opposite_id": None,
+                    "seed_candidate_id": None,
+                    "opposite_seed_id": None,
+                }
+            message = _diagnose_segment_failure(
+                seg_id,
+                adjacency,
+                locator,
+                landmarks,
+                geodesic_lines,
+                deps,
+                opposite_key=opposite_key,
+                seed_key=seed_key,
+                blocked_ids=blocked_ids if blocked_ids else None,
+                seed_point=seed_point,
+            )
+            seed_id = debug_points.get("seed_id")
+            opposite_id = debug_points.get("opposite_id")
+            opposite_seed_id = debug_points.get("opposite_seed_id")
+            seed_candidate_id = debug_points.get("seed_candidate_id")
+            boundary_count = debug_points.get("boundary_count")
+            blocked_count = debug_points.get("blocked_count")
+            total_points = debug_points.get("total_points")
+            detail = (
+                f" seed_id={seed_id}"
+                f" opposite_id={opposite_id}"
+                f" opposite_seed_id={opposite_seed_id}"
+                f" seed_candidate_id={seed_candidate_id}"
+                f" boundary_count={boundary_count}"
+                f" blocked_count={blocked_count}"
+                f" total_points={total_points}"
+            )
+            return (
+                None,
+                f"{message} |{detail}",
+                debug_points,
+            )
 
-        if present and segments.get(seg_id) is not None:
-            update_debug_message(seg_id, None)
-
-        deps_present_cache[seg_id] = present
-        return present, changed
+        return segment, None, None
 
     seg1_deps = ["AB_posterior", "AB_anterior"]
     if {"X1_X2_anterior", "X1_X2_posterior"}.issubset(geodesic_lines.keys()):
         seg1_deps.extend(["X1_X2_anterior", "X1_X2_posterior"])
-    seg1_present, seg1_changed = compute_segment_with_fallback(
+    
+    seg1, error_message, debug_points = compute_segment_with_fallback(
         1,
         seg1_deps,
-        opposite_key="C",
+        opposite_key="D",
         seed_key="A",
         blocked_ids=None,
-        upstream_changed=False,
         allow_fallback=False,
         report_missing_deps=True,
     )
+    if error_message:
+        return (
+            _build_segment_ids(surface, segments, adjacency, locator, landmarks, geodesic_lines),
+            error_message,
+            debug_points,
+        )
+    if seg1:
+        segments[1] = seg1
 
     seg2_deps = ("CD_posterior", "CD_anterior")
-    seg2_present, seg2_changed = compute_segment_with_fallback(
+    seg2, error_message, debug_points = compute_segment_with_fallback(
         2,
         seg2_deps,
         opposite_key="A",
         seed_key="C",
-        blocked_ids=segments[1] if segments.get(1) else None,
-        upstream_changed=seg1_changed,
+        blocked_ids=segments.get(1),
         allow_fallback=False,
         report_missing_deps=True,
     )
+    if error_message:
+        return (
+            _build_segment_ids(surface, segments, adjacency, locator, landmarks, geodesic_lines),
+            error_message,
+            debug_points,
+        )
+    if seg2:
+        segments[2] = seg2
 
     blocked = set()
     if segments.get(1):
@@ -542,16 +599,23 @@ def compute_segment_ids_cached(
         blocked |= segments[2] or set()
 
     seg3_deps = ("AB_posterior", "CD_posterior", "AC", "BD")
-    seg3_present, seg3_changed = compute_segment_with_fallback(
+    seg3, error_message, debug_points = compute_segment_with_fallback(
         3,
         seg3_deps,
         opposite_key="E",
         seed_key="C",
         blocked_ids=blocked if blocked else None,
-        upstream_changed=seg1_changed or seg2_changed,
         allow_fallback=False,
         report_missing_deps=True,
     )
+    if error_message:
+        return (
+            _build_segment_ids(surface, segments, adjacency, locator, landmarks, geodesic_lines),
+            error_message,
+            debug_points,
+        )
+    if seg3:
+        segments[3] = seg3
 
     blocked = set()
     if segments.get(1):
@@ -562,15 +626,22 @@ def compute_segment_ids_cached(
         blocked |= segments[3] or set()
 
     seg4_deps = ("AC", "AF", "CE", "EF_aniso")
-    seg4_present, seg4_changed = compute_segment_with_fallback(
+    seg4, error_message, debug_points = compute_segment_with_fallback(
         4,
         seg4_deps,
         opposite_key="H",
         seed_key="C",
         blocked_ids=blocked if blocked else None,
-        upstream_changed=seg1_changed or seg2_changed or seg3_changed,
         required_landmarks={"A", "B", "C", "D", "E", "F", "H", "I"},
     )
+    if error_message:
+        return (
+            _build_segment_ids(surface, segments, adjacency, locator, landmarks, geodesic_lines),
+            error_message,
+            debug_points,
+        )
+    if seg4:
+        segments[4] = seg4
 
     blocked = set()
     if segments.get(1):
@@ -585,32 +656,45 @@ def compute_segment_ids_cached(
     seg5_deps = ["LAA1_LAA2_anterior", "LAA1_LAA2_posterior"]
     if {"X1_X2_anterior", "X1_X2_posterior"}.issubset(geodesic_lines.keys()):
         seg5_deps.extend(["X1_X2_anterior", "X1_X2_posterior"])
-    seg5_present, seg5_changed = compute_segment_with_fallback(
+    seg5, error_message, debug_points = compute_segment_with_fallback(
         5,
         seg5_deps,
-        opposite_key="D",
+        opposite_key="I",
         seed_key="LAA1",
         blocked_ids=blocked if blocked else None,
-        upstream_changed=seg4_changed,
         allow_fallback=False,
         report_missing_deps=True,
-        required_landmarks={"LAA1", "LAA2", "D", "F"},
+        required_landmarks={"LAA1", "LAA2", "I", "F"},
     )
-    if segments.get(5):
-        blocked |= segments[5] or set()
+    if error_message:
+        return (
+            _build_segment_ids(surface, segments, adjacency, locator, landmarks, geodesic_lines),
+            error_message,
+            debug_points,
+        )
+    if seg5:
+        segments[5] = seg5
+        blocked |= seg5
 
     seg6_deps = ["AB_anterior", "AF", "BH", "FH_aniso"]
     if {"LAA1_LAA2_anterior", "LAA1_LAA2_posterior"}.issubset(geodesic_lines.keys()):
         seg6_deps.extend(["LAA1_LAA2_anterior", "LAA1_LAA2_posterior"])
-    seg6_present, seg6_changed = compute_segment_with_fallback(
+    seg6, error_message, debug_points = compute_segment_with_fallback(
         6,
         seg6_deps,
         opposite_key="E",
         seed_key="B",
         blocked_ids=blocked if blocked else None,
-        upstream_changed=seg4_changed,
         required_landmarks={"A", "B", "C", "D", "E", "F", "H", "I"},
     )
+    if error_message:
+        return (
+            _build_segment_ids(surface, segments, adjacency, locator, landmarks, geodesic_lines),
+            error_message,
+            debug_points,
+        )
+    if seg6:
+        segments[6] = seg6
 
     blocked = set()
     if segments.get(1):
@@ -625,15 +709,22 @@ def compute_segment_ids_cached(
         blocked |= segments[6] or set()
 
     seg7_deps = ("BD", "DI", "BH", "HI_aniso")
-    seg7_present, seg7_changed = compute_segment_with_fallback(
+    seg7, error_message, debug_points = compute_segment_with_fallback(
         7,
         seg7_deps,
         opposite_key="A",
         seed_key="D",
         blocked_ids=blocked if blocked else None,
-        upstream_changed=seg6_changed,
         required_landmarks={"A", "B", "C", "D", "E", "F", "H", "I"},
     )
+    if error_message:
+        return (
+            _build_segment_ids(surface, segments, adjacency, locator, landmarks, geodesic_lines),
+            error_message,
+            debug_points,
+        )
+    if seg7:
+        segments[7] = seg7
 
     blocked = set()
     if segments.get(1):
@@ -650,15 +741,22 @@ def compute_segment_ids_cached(
         blocked |= segments[7] or set()
 
     seg8_deps = ("CD_anterior", "CE", "DI", "IE_aniso")
-    seg8_present, seg8_changed = compute_segment_with_fallback(
+    seg8, error_message, debug_points = compute_segment_with_fallback(
         8,
         seg8_deps,
         opposite_key="B",
         seed_key="D",
         blocked_ids=blocked if blocked else None,
-        upstream_changed=seg7_changed,
         required_landmarks={"A", "B", "C", "D", "E", "F", "H", "I"},
     )
+    if error_message:
+        return (
+            _build_segment_ids(surface, segments, adjacency, locator, landmarks, geodesic_lines),
+            error_message,
+            debug_points,
+        )
+    if seg8:
+        segments[8] = seg8
 
     blocked = set()
     if segments.get(1):
@@ -679,103 +777,25 @@ def compute_segment_ids_cached(
         blocked |= segments[8] or set()
 
     seg9_deps = ("EF_aniso", "FH_aniso", "HI_aniso", "IE_aniso")
-    seg9_present, seg9_changed = compute_segment_with_fallback(
+    seg9, error_message, debug_points = compute_segment_with_fallback(
         9,
         seg9_deps,
         opposite_key="B",
         seed_key="E",
         blocked_ids=None,
-        upstream_changed=seg8_changed,
         required_landmarks={"E", "F", "H", "I"},
     )
+    if error_message:
+        return (
+            _build_segment_ids(surface, segments, adjacency, locator, landmarks, geodesic_lines),
+            error_message,
+            debug_points,
+        )
+    if seg9:
+        segments[9] = seg9
 
-    segment_updates: dict[int, bool] = {}
-    if seg1_changed:
-        segment_updates[1] = segments.get(1) is not None
-    if seg2_changed:
-        segment_updates[2] = segments.get(2) is not None
-    if seg3_changed:
-        segment_updates[3] = segments.get(3) is not None
-    if seg4_changed:
-        segment_updates[4] = segments.get(4) is not None
-    if seg5_changed:
-        segment_updates[5] = segments.get(5) is not None
-    if seg6_changed:
-        segment_updates[6] = segments.get(6) is not None
-    if seg7_changed:
-        segment_updates[7] = segments.get(7) is not None
-    if seg8_changed:
-        segment_updates[8] = segments.get(8) is not None
-    if seg9_changed:
-        segment_updates[9] = segments.get(9) is not None
-
-    cache["segment_updates"] = segment_updates
-
-    segment_changed = bool(segment_updates)
-    cached_ids = cache.get("segment_ids")
-    if not segment_changed and cached_ids is not None:
-        if not changed_geodesics:
-            return cached_ids, cache
-
-    segment_ids = vtkIntArray()
-    segment_ids.SetName("SegmentId")
-    segment_ids.SetNumberOfComponents(1)
-    segment_ids.SetNumberOfTuples(surface.GetNumberOfPoints())
-    for i in range(surface.GetNumberOfPoints()):
-        segment_ids.SetValue(i, 0)
-
-    if segments.get(1):
-        for vertex_id in segments[1] or []:
-            segment_ids.SetValue(vertex_id, 1)
-
-    if segments.get(2):
-        for vertex_id in segments[2] or []:
-            if segment_ids.GetValue(vertex_id) == 0:
-                segment_ids.SetValue(vertex_id, 2)
-
-    if segments.get(3):
-        for vertex_id in segments[3] or []:
-            if segment_ids.GetValue(vertex_id) == 0:
-                segment_ids.SetValue(vertex_id, 3)
-
-    if segments.get(4):
-        for vertex_id in segments[4] or []:
-            if segment_ids.GetValue(vertex_id) == 0:
-                segment_ids.SetValue(vertex_id, 4)
-
-    if segments.get(5):
-        for vertex_id in segments[5] or []:
-            if segment_ids.GetValue(vertex_id) == 0:
-                segment_ids.SetValue(vertex_id, 5)
-
-    if segments.get(6):
-        for vertex_id in segments[6] or []:
-            if segment_ids.GetValue(vertex_id) == 0:
-                segment_ids.SetValue(vertex_id, 6)
-
-    if segments.get(7):
-        for vertex_id in segments[7] or []:
-            if segment_ids.GetValue(vertex_id) == 0:
-                segment_ids.SetValue(vertex_id, 7)
-
-    if segments.get(8):
-        for vertex_id in segments[8] or []:
-            if segment_ids.GetValue(vertex_id) == 0:
-                segment_ids.SetValue(vertex_id, 8)
-
-    if segments.get(9):
-        for vertex_id in segments[9] or []:
-            if segment_ids.GetValue(vertex_id) == 0:
-                segment_ids.SetValue(vertex_id, 9)
-
-    boundary_ids = _collect_boundary_ids(
-        locator,
-        landmarks,
-        geodesic_lines,
-        tuple(geodesic_lines.keys()),
+    return (
+        _build_segment_ids(surface, segments, adjacency, locator, landmarks, geodesic_lines),
+        None,
+        None,
     )
-    if boundary_ids:
-        _assign_boundary_vertices(segment_ids, adjacency, boundary_ids)
-
-    cache["segment_ids"] = segment_ids
-    return segment_ids, cache

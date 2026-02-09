@@ -25,7 +25,7 @@ from geodesics import (
     create_pair_geodesics,
     create_simple_geodesic,
 )
-from regions import compute_segment_ids_cached
+from regions import compute_segment_ids
 
 
 def detect_os() -> str:
@@ -65,7 +65,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._geodesic_actors: dict[str, vtkActor] = {}
         self._geodesic_lines: dict[str, object] = {}
         self._aux_actors: dict[str, vtkActor] = {}
-        self._segment_cache = None
         self._segment_lut = self._build_segment_lut()
         self._current_step_index = 0
         self._steps = self._build_steps()
@@ -139,6 +138,10 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         controls_label.setWordWrap(True)
         controls_layout.addWidget(controls_label)
+
+        self._calculate_regions_button = QtWidgets.QPushButton("Calculate regions", controls_group)
+        self._calculate_regions_button.clicked.connect(self._calculate_regions)
+        controls_layout.addWidget(self._calculate_regions_button)
         layout.addWidget(controls_group)
 
         messages_group = QtWidgets.QGroupBox("Messages", panel)
@@ -327,6 +330,26 @@ class MainWindow(QtWidgets.QMainWindow):
     def _set_error_message(self, message: str) -> None:
         if self._error_box is not None:
             self._error_box.setPlainText(message)
+
+    def _calculate_regions(self) -> None:
+        if self._polydata is None or self._mesh_mapper is None:
+            return
+        segment_ids, error_message, debug_points = compute_segment_ids(
+            self._polydata,
+            self._landmarks,
+            self._geodesic_lines,
+        )
+        if error_message:
+            self._set_error_message(error_message)
+        else:
+            self._set_error_message("")
+        self._show_failure_debug(debug_points)
+        if segment_ids is None:
+            return
+        self._apply_segment_ids(segment_ids)
+        self._append_message("Regions calculated")
+        if self._vtk_widget is not None:
+            self._vtk_widget.GetRenderWindow().Render()
 
     def _on_left_button_press(self, obj, _event) -> None:
         if self._polydata is None:
@@ -583,7 +606,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 for key in ("EF_aniso", "FH_aniso", "HI_aniso", "IE_aniso"):
                     self._remove_geodesic(key)
             else:
-                penalty_strength = 20.0
+                penalty_strength = 5.0
                 aniso_specs = (
                     ("EF_aniso", "E", "F", (0.9, 0.2, 0.2)),
                     ("FH_aniso", "F", "H", (0.2, 0.9, 0.2)),
@@ -606,7 +629,6 @@ class MainWindow(QtWidgets.QMainWindow):
                         changed_geodesics.add(key)
                         self._append_message(f"Geodesic {key} updated")
 
-        self._update_segments(changed_geodesics)
         self._vtk_widget.GetRenderWindow().Render()
 
 
@@ -707,12 +729,18 @@ class MainWindow(QtWidgets.QMainWindow):
             actor = vtkActor()
             actor.SetMapper(mapper)
             actor.GetProperty().SetColor(*color)
+            actor.GetProperty().SetRepresentationToPoints()
+            actor.GetProperty().SetRenderPointsAsSpheres(True)
+            actor.GetProperty().SetLighting(False)
             actor.GetProperty().SetPointSize(point_size)
             self._renderer.AddActor(actor)
             self._aux_actors[key] = actor
         else:
             actor.SetMapper(mapper)
             actor.GetProperty().SetColor(*color)
+            actor.GetProperty().SetRepresentationToPoints()
+            actor.GetProperty().SetRenderPointsAsSpheres(True)
+            actor.GetProperty().SetLighting(False)
             actor.GetProperty().SetPointSize(point_size)
 
     def _show_failure_debug(self, debug_points: dict | None) -> None:
@@ -733,30 +761,30 @@ class MainWindow(QtWidgets.QMainWindow):
         seed_candidate_id = debug_points.get("seed_candidate_id")
         opposite_seed_id = debug_points.get("opposite_seed_id")
 
-        self._store_point_actor("debug_boundary", boundary_ids, (1.0, 0.85, 0.2), 3.0)
+        self._store_point_actor("debug_boundary", boundary_ids, (1.0, 0.85, 0.2), 6.0)
         self._store_point_actor(
             "debug_seed",
             [seed_id] if seed_id is not None else [],
             (1.0, 0.2, 0.2),
-            8.0,
+            12.0,
         )
         self._store_point_actor(
             "debug_opposite",
             [opposite_id] if opposite_id is not None else [],
             (0.2, 0.6, 1.0),
-            8.0,
+            12.0,
         )
         self._store_point_actor(
             "debug_seed_candidate",
             [seed_candidate_id] if seed_candidate_id is not None else [],
             (0.2, 1.0, 0.4),
-            7.0,
+            10.0,
         )
         self._store_point_actor(
             "debug_opposite_seed",
             [opposite_seed_id] if opposite_seed_id is not None else [],
             (0.6, 0.2, 1.0),
-            7.0,
+            10.0,
         )
 
     def _remove_aux_actor(self, key: str) -> None:
@@ -807,38 +835,7 @@ class MainWindow(QtWidgets.QMainWindow):
         lut.SetTableValue(9, 0.45, 0.45, 0.45, 1.0)
         return lut
 
-    def _update_segments(self, changed_geodesics: set[str] | None = None) -> None:
-        if self._polydata is None or self._mesh_mapper is None:
-            return
-
-        segment_ids, self._segment_cache = compute_segment_ids_cached(
-            self._polydata,
-            self._landmarks,
-            self._geodesic_lines,
-            self._segment_cache,
-            changed_geodesics,
-        )
-        if self._segment_cache and "debug" in self._segment_cache:
-            self._set_error_message(self._segment_cache["debug"])
-        else:
-            self._set_error_message("")
-        if self._segment_cache and "segment_updates" in self._segment_cache:
-            updates = self._segment_cache.get("segment_updates", {})
-            if isinstance(updates, dict):
-                for seg_id in sorted(updates.keys()):
-                    if updates[seg_id]:
-                        self._append_message(f"Segment {seg_id} updated")
-                    else:
-                        self._append_message(f"Segment {seg_id} cleared")
-                updates.clear()
-        if segment_ids is None:
-            return
-
-        debug_points = None
-        if self._segment_cache and "debug_points" in self._segment_cache:
-            debug_points = self._segment_cache.get("debug_points")
-        self._show_failure_debug(debug_points)
-
+    def _apply_segment_ids(self, segment_ids) -> None:
         point_data = self._polydata.GetPointData()
         point_data.AddArray(segment_ids)
         point_data.SetScalars(segment_ids)
