@@ -68,6 +68,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._segment_lut = self._build_segment_lut()
         self._current_step_index = 0
         self._steps = self._build_steps()
+        self._message_box = None
+        self._error_box = None
+        self._updating_steps = False
 
         central = QtWidgets.QWidget(self)
         layout = QtWidgets.QHBoxLayout(central)
@@ -84,7 +87,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._vtk_widget.GetRenderWindow().AddRenderer(self._renderer)
         self._setup_shortcuts()
-        self.statusBar().showMessage("Load a mesh to begin")
 
     def _build_left_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget(self)
@@ -106,6 +108,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._steps_list = QtWidgets.QListWidget(landmarks_group)
         self._steps_list.currentRowChanged.connect(self._on_step_changed)
+        self._steps_list.itemChanged.connect(self._on_step_item_changed)
+        self._steps_list.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         landmarks_layout.addWidget(self._steps_list)
 
         buttons_layout = QtWidgets.QHBoxLayout()
@@ -124,8 +128,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "- Drag: rotate\n"
             "- Right drag: zoom\n"
             "- Middle drag: pan\n"
-            "- Mouse wheel: zoom\n\n"
-            "- Click mesh: set landmark\n\n"
+            "- Mouse wheel: zoom\n"
+            "- Click mesh: set landmark\n"
             "Keyboard:\n"
             "- Space: next step\n"
             "- Esc: previous step",
@@ -134,6 +138,22 @@ class MainWindow(QtWidgets.QMainWindow):
         controls_label.setWordWrap(True)
         controls_layout.addWidget(controls_label)
         layout.addWidget(controls_group)
+
+        messages_group = QtWidgets.QGroupBox("Messages", panel)
+        messages_layout = QtWidgets.QVBoxLayout(messages_group)
+        self._message_box = QtWidgets.QPlainTextEdit(messages_group)
+        self._message_box.setReadOnly(True)
+        self._message_box.setMinimumHeight(120)
+        messages_layout.addWidget(self._message_box)
+        layout.addWidget(messages_group)
+
+        errors_group = QtWidgets.QGroupBox("Errors", panel)
+        errors_layout = QtWidgets.QVBoxLayout(errors_group)
+        self._error_box = QtWidgets.QPlainTextEdit(errors_group)
+        self._error_box.setReadOnly(True)
+        self._error_box.setMinimumHeight(40)
+        errors_layout.addWidget(self._error_box)
+        layout.addWidget(errors_group)
 
         layout.addStretch(1)
 
@@ -181,6 +201,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._display_polydata(polydata)
         self._update_mesh_info(polydata, file_path)
+        self._append_message(f"Mesh loaded: {Path(file_path).name}")
 
     def _read_vtk_polydata(self, path: Path):
         reader = vtkPolyDataReader()
@@ -217,7 +238,7 @@ class MainWindow(QtWidgets.QMainWindow):
         num_cells = polydata.GetNumberOfCells()
         name = Path(file_path).name
         self._mesh_info.setText(
-            f"{name}\nVertices: {num_points}\nCells: {num_cells}"
+            f"{name}\nVerts: {num_points} Cells: {num_cells}"
         )
 
     def _build_steps(self) -> list[dict[str, str]]:
@@ -235,22 +256,41 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _populate_steps(self) -> None:
         self._steps_list.blockSignals(True)
+        self._updating_steps = True
         self._steps_list.clear()
         for step in self._steps:
             item = QtWidgets.QListWidgetItem(step["label"])
             item.setData(QtCore.Qt.UserRole, step["key"])
             item.setCheckState(QtCore.Qt.Unchecked)
+            item.setData(QtCore.Qt.UserRole + 1, False)
             self._steps_list.addItem(item)
+        self._updating_steps = False
         self._steps_list.blockSignals(False)
         if self._steps:
             self._steps_list.setCurrentRow(0)
             self._update_step_label()
+
+        row_height = self._steps_list.sizeHintForRow(0)
+        if row_height <= 0:
+            row_height = 24
+        total_height = row_height * self._steps_list.count() + self._steps_list.frameWidth() * 2
+        self._steps_list.setMinimumHeight(total_height)
 
     def _on_step_changed(self, row: int) -> None:
         if row < 0:
             return
         self._current_step_index = row
         self._update_step_label()
+
+    def _on_step_item_changed(self, item: QtWidgets.QListWidgetItem) -> None:
+        if self._updating_steps:
+            return
+        stored = bool(item.data(QtCore.Qt.UserRole + 1))
+        desired = QtCore.Qt.Checked if stored else QtCore.Qt.Unchecked
+        if item.checkState() != desired:
+            self._updating_steps = True
+            item.setCheckState(desired)
+            self._updating_steps = False
 
     def _update_step_label(self) -> None:
         if not self._steps:
@@ -274,6 +314,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def _setup_shortcuts(self) -> None:
         QtGui.QShortcut(QtCore.Qt.Key_Space, self, self._go_next_step)
         QtGui.QShortcut(QtCore.Qt.Key_Escape, self, self._go_prev_step)
+
+    def _append_message(self, message: str) -> None:
+        if self._message_box is not None and message:
+            self._message_box.appendPlainText(message)
+
+    def _set_error_message(self, message: str) -> None:
+        if self._error_box is not None:
+            self._error_box.setPlainText(message)
 
     def _on_left_button_press(self, obj, _event) -> None:
         if self._polydata is None:
@@ -325,7 +373,10 @@ class MainWindow(QtWidgets.QMainWindow):
         item = self._steps_list.item(index)
         if item is None:
             return
+        self._updating_steps = True
+        item.setData(QtCore.Qt.UserRole + 1, True)
         item.setCheckState(QtCore.Qt.Checked)
+        self._updating_steps = False
 
     def _update_landmark_actor(self, key: str, point: tuple[float, float, float]) -> None:
         if self._renderer is None:
@@ -374,7 +425,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 cd_ok = self._create_pair_geodesics("C", "D", ("A", "C", "D"))
                 changed_geodesics.update({"CD_anterior", "CD_posterior"})
             if ab_changed and cd_changed and ab_ok and cd_ok:
-                self.statusBar().showMessage("AB/CD geodesics updated")
+                self._append_message("AB/CD geodesics updated")
 
         if (
             "A" in self._landmarks
@@ -471,6 +522,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     if result is not None:
                         self._store_geodesic_actor(key, result.polyline, color, 4.0)
                         changed_geodesics.add(key)
+                        self._append_message(f"Geodesic {key} updated")
 
         self._update_segments(changed_geodesics)
         self._vtk_widget.GetRenderWindow().Render()
@@ -492,10 +544,12 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
         self._store_geodesic_actor(primary_key, primary.polyline, (0.9, 0.6, 0.1), 6.0)
+        self._append_message(f"Geodesic {primary_key} updated")
         if alternate is None:
-            self.statusBar().showMessage(f"Alternate {start_key}{end_key} geodesic not found")
+            self._set_error_message(f"Alternate {start_key}{end_key} geodesic not found")
             return False
         self._store_geodesic_actor(alternate_key, alternate.polyline, (0.2, 0.7, 0.2), 6.0)
+        self._append_message(f"Geodesic {alternate_key} updated")
         return True
 
     def _store_geodesic_actor(
@@ -560,8 +614,9 @@ class MainWindow(QtWidgets.QMainWindow):
             end_key,
         )
         if result is None:
-            self.statusBar().showMessage(f"{key} geodesic not found")
+            self._set_error_message(f"{key} geodesic not found")
             return
+        self._append_message(f"Geodesic {key} updated")
         self._store_geodesic_actor(key, result.polyline, color, line_width)
 
     def _remove_geodesic(self, key: str) -> None:
@@ -597,7 +652,18 @@ class MainWindow(QtWidgets.QMainWindow):
             changed_geodesics,
         )
         if self._segment_cache and "debug" in self._segment_cache:
-            self.statusBar().showMessage(self._segment_cache["debug"])
+            self._set_error_message(self._segment_cache["debug"])
+        else:
+            self._set_error_message("")
+        if self._segment_cache and "segment_updates" in self._segment_cache:
+            updates = self._segment_cache.get("segment_updates", {})
+            if isinstance(updates, dict):
+                for seg_id in sorted(updates.keys()):
+                    if updates[seg_id]:
+                        self._append_message(f"Segment {seg_id} updated")
+                    else:
+                        self._append_message(f"Segment {seg_id} cleared")
+                updates.clear()
         if segment_ids is None:
             return
 
