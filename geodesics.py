@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import heapq
 from typing import Iterable, Sequence
 
-from vtkmodules.vtkCommonDataModel import vtkPointLocator, vtkPolyData
-from vtkmodules.vtkCommonCore import vtkFloatArray
+from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPointLocator, vtkPolyData
+from vtkmodules.vtkCommonCore import vtkFloatArray, vtkIdList, vtkPoints
 from vtkmodules.vtkFiltersCore import vtkAppendPolyData
 from vtkmodules.vtkFiltersModeling import vtkDijkstraGraphGeodesicPath
 from vtkmodules.vtkFiltersCore import vtkClipPolyData
@@ -39,6 +40,113 @@ def compute_geodesic(surface: vtkPolyData, start_id: int, end_id: int) -> Geodes
     polyline = dijkstra.GetOutput()
     point_ids = [int(dijkstra.GetIdList().GetId(i)) for i in range(dijkstra.GetIdList().GetNumberOfIds())]
     return GeodesicResult(point_ids=point_ids, polyline=polyline)
+
+
+def _build_point_adjacency(surface: vtkPolyData) -> list[set[int]]:
+    adjacency: list[set[int]] = [set() for _ in range(surface.GetNumberOfPoints())]
+
+    def add_cell(ids: Iterable[int]) -> None:
+        ids_list = list(ids)
+        count = len(ids_list)
+        for i in range(count):
+            a = ids_list[i]
+            for j in range(i + 1, count):
+                b = ids_list[j]
+                adjacency[a].add(b)
+                adjacency[b].add(a)
+
+    polys = surface.GetPolys()
+    polys.InitTraversal()
+    id_list = vtkIdList()
+    while polys.GetNextCell(id_list):
+        if id_list.GetNumberOfIds() >= 2:
+            add_cell(id_list.GetId(i) for i in range(id_list.GetNumberOfIds()))
+
+    strips = surface.GetStrips()
+    strips.InitTraversal()
+    id_list.Reset()
+    while strips.GetNextCell(id_list):
+        if id_list.GetNumberOfIds() >= 2:
+            add_cell(id_list.GetId(i) for i in range(id_list.GetNumberOfIds()))
+
+    return adjacency
+
+
+def compute_anisotropic_geodesic(
+    surface: vtkPolyData,
+    start_id: int,
+    end_id: int,
+    normal: Sequence[float],
+    penalty_strength: float,
+) -> GeodesicResult | None:
+    if surface.GetNumberOfPoints() == 0:
+        return None
+    if start_id == end_id:
+        return None
+
+    adjacency = _build_point_adjacency(surface)
+    unit_normal = normalize(normal)
+    if unit_normal == (0.0, 0.0, 0.0):
+        unit_normal = (0.0, 0.0, 0.0)
+
+    num_points = surface.GetNumberOfPoints()
+    dist = [float("inf")] * num_points
+    prev = [-1] * num_points
+    dist[start_id] = 0.0
+    heap: list[tuple[float, int]] = [(0.0, start_id)]
+
+    while heap:
+        current_dist, current = heapq.heappop(heap)
+        if current_dist != dist[current]:
+            continue
+        if current == end_id:
+            break
+        px, py, pz = surface.GetPoint(current)
+        for neighbor in adjacency[current]:
+            nx, ny, nz = surface.GetPoint(neighbor)
+            dx = nx - px
+            dy = ny - py
+            dz = nz - pz
+            length = (dx * dx + dy * dy + dz * dz) ** 0.5
+            if length == 0.0:
+                continue
+            if unit_normal == (0.0, 0.0, 0.0):
+                penalty = 1.0
+            else:
+                dir_dot = abs((dx / length) * unit_normal[0] + (dy / length) * unit_normal[1] + (dz / length) * unit_normal[2])
+                penalty = 1.0 + penalty_strength * dir_dot
+            weight = length * penalty
+            next_dist = current_dist + weight
+            if next_dist < dist[neighbor]:
+                dist[neighbor] = next_dist
+                prev[neighbor] = current
+                heapq.heappush(heap, (next_dist, neighbor))
+
+    if prev[end_id] == -1:
+        return None
+
+    path_ids: list[int] = []
+    current = end_id
+    while current != -1:
+        path_ids.append(current)
+        if current == start_id:
+            break
+        current = prev[current]
+    if path_ids[-1] != start_id:
+        return None
+    path_ids.reverse()
+
+    vtk_points = vtkPoints()
+    lines = vtkCellArray()
+    lines.InsertNextCell(len(path_ids))
+    for idx, point_id in enumerate(path_ids):
+        vtk_points.InsertNextPoint(surface.GetPoint(point_id))
+        lines.InsertCellPoint(idx)
+
+    polyline = vtkPolyData()
+    polyline.SetPoints(vtk_points)
+    polyline.SetLines(lines)
+    return GeodesicResult(point_ids=path_ids, polyline=polyline)
 
 
 def compute_weighted_geodesic(
@@ -136,29 +244,6 @@ def scale(a: Sequence[float], s: float) -> tuple[float, float, float]:
     return (a[0] * s, a[1] * s, a[2] * s)
 
 
-def bounds_diag(surface: vtkPolyData) -> float:
-    xmin, xmax, ymin, ymax, zmin, zmax = surface.GetBounds()
-    dx = xmax - xmin
-    dy = ymax - ymin
-    dz = zmax - zmin
-    return (dx * dx + dy * dy + dz * dz) ** 0.5
-
-
-def distance_to_polyline(surface: vtkPolyData, polyline: vtkPolyData) -> list[float]:
-    locator = vtkPointLocator()
-    locator.SetDataSet(polyline)
-    locator.BuildLocator()
-
-    distances: list[float] = []
-    for i in range(surface.GetNumberOfPoints()):
-        point = surface.GetPoint(i)
-        closest_id = locator.FindClosestPoint(point)
-        closest_point = polyline.GetPoint(closest_id)
-        dx = point[0] - closest_point[0]
-        dy = point[1] - closest_point[1]
-        dz = point[2] - closest_point[2]
-        distances.append((dx * dx + dy * dy + dz * dz) ** 0.5)
-    return distances
 
 
 def cross(a: Sequence[float], b: Sequence[float]) -> tuple[float, float, float]:
@@ -167,10 +252,6 @@ def cross(a: Sequence[float], b: Sequence[float]) -> tuple[float, float, float]:
         a[2] * b[0] - a[0] * b[2],
         a[0] * b[1] - a[1] * b[0],
     )
-
-
-def dot(a: Sequence[float], b: Sequence[float]) -> float:
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 
 def plane_side(
@@ -286,3 +367,58 @@ def create_simple_geodesic(
     if result.polyline is None or result.polyline.GetNumberOfPoints() == 0:
         return None
     return result
+
+
+def create_anisotropic_geodesic(
+    surface: vtkPolyData,
+    locator: vtkPointLocator,
+    landmarks: dict[str, Sequence[float]],
+    start_key: str,
+    end_key: str,
+    normal: Sequence[float],
+    penalty_strength: float,
+) -> GeodesicResult | None:
+    start_point = landmarks[start_key]
+    end_point = landmarks[end_key]
+    start_id = closest_point_id(locator, start_point)
+    end_id = closest_point_id(locator, end_point)
+    result = compute_anisotropic_geodesic(surface, start_id, end_id, normal, penalty_strength)
+    if result is None or result.polyline is None or result.polyline.GetNumberOfPoints() == 0:
+        return None
+    return result
+
+
+def compute_ma_plane_normal(
+    e: Sequence[float],
+    f: Sequence[float],
+    h: Sequence[float],
+    i: Sequence[float],
+) -> tuple[float, float, float] | None:
+    plane = _best_fit_plane([e, f, h, i])
+    if plane is None:
+        return None
+    _origin, normal = plane
+    return normalize(normal)
+
+
+def _best_fit_plane(points: Sequence[Sequence[float]]) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
+    if len(points) < 3:
+        return None
+    vtk_pts = vtkPoints()
+    for point in points:
+        vtk_pts.InsertNextPoint(point)
+    origin = [0.0, 0.0, 0.0]
+    normal = [0.0, 0.0, 0.0]
+    try:
+        vtkPlane.ComputeBestFittingPlane(vtk_pts, origin, normal)
+        best_normal = normalize(normal)
+    except AttributeError:
+        best_normal = normalize(cross(sub(points[1], points[0]), sub(points[2], points[0])))
+        origin = list(centroid(points))
+    if best_normal == (0.0, 0.0, 0.0):
+        return None
+    return (origin[0], origin[1], origin[2]), best_normal
+
+
+
+

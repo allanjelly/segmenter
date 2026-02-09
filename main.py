@@ -9,6 +9,7 @@ from vtkmodules.vtkCommonDataModel import vtkPointLocator
 from vtkmodules.vtkIOLegacy import vtkPolyDataReader
 from vtkmodules.vtkFiltersSources import vtkSphereSource
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
+from vtkmodules.vtkCommonCore import vtkLookupTable
 from vtkmodules.vtkRenderingCore import (
     vtkActor,
     vtkCellPicker,
@@ -16,7 +17,14 @@ from vtkmodules.vtkRenderingCore import (
     vtkRenderer,
 )
 
-from geodesics import build_point_locator, create_pair_geodesics, create_simple_geodesic
+from geodesics import (
+    build_point_locator,
+    compute_ma_plane_normal,
+    create_anisotropic_geodesic,
+    create_pair_geodesics,
+    create_simple_geodesic,
+)
+from regions import compute_segment_ids_cached
 
 
 def detect_os() -> str:
@@ -42,6 +50,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setWindowTitle("Segmenter")
         self.resize(1200, 800)
         self._mesh_actor = None
+        self._mesh_mapper = None
         self._initial_file = initial_file
         self._pending_file = None
         self._polydata = None
@@ -53,6 +62,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._landmarks: dict[str, tuple[float, float, float]] = {}
         self._landmark_actors: dict[str, vtkActor] = {}
         self._geodesic_actors: dict[str, vtkActor] = {}
+        self._geodesic_lines: dict[str, object] = {}
+        self._aux_actors: dict[str, vtkActor] = {}
+        self._segment_cache = None
+        self._segment_lut = self._build_segment_lut()
         self._current_step_index = 0
         self._steps = self._build_steps()
 
@@ -181,6 +194,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _display_polydata(self, polydata) -> None:
         mapper = vtkPolyDataMapper()
         mapper.SetInputData(polydata)
+        mapper.SetScalarModeToUsePointData()
+        mapper.SelectColorArray("SegmentId")
+        mapper.SetLookupTable(self._segment_lut)
+        mapper.SetScalarRange(0, 8)
+        mapper.SetScalarVisibility(True)
 
         actor = vtkActor()
         actor.SetMapper(mapper)
@@ -189,6 +207,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._renderer.RemoveActor(self._mesh_actor)
 
         self._mesh_actor = actor
+        self._mesh_mapper = mapper
         self._renderer.AddActor(actor)
         self._renderer.ResetCamera()
         self._vtk_widget.GetRenderWindow().Render()
@@ -286,10 +305,19 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         step = self._steps[self._current_step_index]
         key = step["key"]
-        self._landmarks[key] = point
-        self._update_landmark_actor(key, point)
+        previous = self._landmarks.get(key)
+        moved = (
+            previous is None
+            or (previous[0] - point[0]) ** 2
+            + (previous[1] - point[1]) ** 2
+            + (previous[2] - point[2]) ** 2
+            > 1.0e-10
+        )
+        if moved:
+            self._landmarks[key] = point
+            self._update_landmark_actor(key, point)
         self._mark_step_completed(self._current_step_index)
-        self._update_geodesics()
+        self._update_geodesics({key} if moved else set())
         self._go_next_step()
         self._vtk_widget.GetRenderWindow().Render()
 
@@ -321,45 +349,132 @@ class MainWindow(QtWidgets.QMainWindow):
 
         actor.SetPosition(point)
 
-    def _update_geodesics(self) -> None:
+    def _update_geodesics(self, changed_landmarks: set[str] | None = None) -> None:
         if self._polydata is None or self._geo_locator is None or self._renderer is None:
             return
+        if changed_landmarks is None:
+            changed_landmarks = set(self._landmarks.keys())
+        changed_geodesics: set[str] = set()
         required_pairs = {"A", "B", "C", "D", "E"}
         if required_pairs.issubset(self._landmarks.keys()):
-            self._remove_geodesic("AB_anterior")
-            self._remove_geodesic("AB_posterior")
-            self._remove_geodesic("CD_anterior")
-            self._remove_geodesic("CD_posterior")
-            ab_ok = self._create_pair_geodesics("A", "B", ("A", "B", "C"))
-            cd_ok = self._create_pair_geodesics("C", "D", ("A", "C", "D"))
-            if ab_ok and cd_ok:
+            ab_missing = not {"AB_anterior", "AB_posterior"}.issubset(self._geodesic_lines.keys())
+            cd_missing = not {"CD_anterior", "CD_posterior"}.issubset(self._geodesic_lines.keys())
+            ab_changed = bool({"A", "B"} & changed_landmarks) or ab_missing
+            cd_changed = bool({"C", "D"} & changed_landmarks) or cd_missing
+            ab_ok = True
+            cd_ok = True
+            if ab_changed:
+                self._remove_geodesic("AB_anterior")
+                self._remove_geodesic("AB_posterior")
+                ab_ok = self._create_pair_geodesics("A", "B", ("A", "B", "C"))
+                changed_geodesics.update({"AB_anterior", "AB_posterior"})
+            if cd_changed:
+                self._remove_geodesic("CD_anterior")
+                self._remove_geodesic("CD_posterior")
+                cd_ok = self._create_pair_geodesics("C", "D", ("A", "C", "D"))
+                changed_geodesics.update({"CD_anterior", "CD_posterior"})
+            if ab_changed and cd_changed and ab_ok and cd_ok:
                 self.statusBar().showMessage("AB/CD geodesics updated")
 
-        if "A" in self._landmarks and "C" in self._landmarks:
+        if (
+            "A" in self._landmarks
+            and "C" in self._landmarks
+            and ({"A", "C"} & changed_landmarks or "AC" not in self._geodesic_lines)
+        ):
             self._remove_geodesic("AC")
             self._create_simple_geodesic("AC", "A", "C", (0.2, 0.8, 1.0), 6.0)
+            changed_geodesics.add("AC")
 
-        if "B" in self._landmarks and "D" in self._landmarks:
+        if (
+            "B" in self._landmarks
+            and "D" in self._landmarks
+            and ({"B", "D"} & changed_landmarks or "BD" not in self._geodesic_lines)
+        ):
             self._remove_geodesic("BD")
             self._create_simple_geodesic("BD", "B", "D", (0.2, 0.8, 1.0), 6.0)
+            changed_geodesics.add("BD")
 
-        if "C" in self._landmarks and "E" in self._landmarks:
+        if (
+            "C" in self._landmarks
+            and "E" in self._landmarks
+            and ({"C", "E"} & changed_landmarks or "CE" not in self._geodesic_lines)
+        ):
             self._remove_geodesic("CE")
             self._create_simple_geodesic("CE", "C", "E", (0.7, 0.9, 0.3), 6.0)
+            changed_geodesics.add("CE")
 
-        if "A" in self._landmarks and "F" in self._landmarks:
+        if (
+            "A" in self._landmarks
+            and "F" in self._landmarks
+            and ({"A", "F"} & changed_landmarks or "AF" not in self._geodesic_lines)
+        ):
             self._remove_geodesic("AF")
             self._create_simple_geodesic("AF", "A", "F", (0.7, 0.9, 0.3), 6.0)
+            changed_geodesics.add("AF")
 
-        if "B" in self._landmarks and "H" in self._landmarks:
+        if (
+            "B" in self._landmarks
+            and "H" in self._landmarks
+            and ({"B", "H"} & changed_landmarks or "BH" not in self._geodesic_lines)
+        ):
             self._remove_geodesic("BH")
             self._create_simple_geodesic("BH", "B", "H", (0.7, 0.9, 0.3), 6.0)
+            changed_geodesics.add("BH")
 
-        if "D" in self._landmarks and "I" in self._landmarks:
+        if (
+            "D" in self._landmarks
+            and "I" in self._landmarks
+            and ({"D", "I"} & changed_landmarks or "DI" not in self._geodesic_lines)
+        ):
             self._remove_geodesic("DI")
             self._create_simple_geodesic("DI", "D", "I", (0.7, 0.9, 0.3), 6.0)
-                     
+            changed_geodesics.add("DI")
+
+        has_ma_points = {"E", "F", "H", "I"}.issubset(self._landmarks.keys())
+        if not has_ma_points:
+            for key in ("EF_aniso", "FH_aniso", "HI_aniso", "IE_aniso"):
+                self._remove_geodesic(key)
+        elif (
+            {"E", "F", "H", "I"} & changed_landmarks
+            or not {"EF_aniso", "FH_aniso", "HI_aniso", "IE_aniso"}.issubset(
+                self._geodesic_lines.keys()
+            )
+        ):
+            ma_normal = compute_ma_plane_normal(
+                self._landmarks["E"],
+                self._landmarks["F"],
+                self._landmarks["H"],
+                self._landmarks["I"],
+            )
+            if ma_normal is None:
+                for key in ("EF_aniso", "FH_aniso", "HI_aniso", "IE_aniso"):
+                    self._remove_geodesic(key)
+            else:
+                penalty_strength = 10.0
+                aniso_specs = (
+                    ("EF_aniso", "E", "F", (0.9, 0.2, 0.2)),
+                    ("FH_aniso", "F", "H", (0.2, 0.9, 0.2)),
+                    ("HI_aniso", "H", "I", (0.2, 0.2, 0.9)),
+                    ("IE_aniso", "I", "E", (0.9, 0.7, 0.2)),
+                )
+                for key, start_key, end_key, color in aniso_specs:
+                    self._remove_geodesic(key)
+                    result = create_anisotropic_geodesic(
+                        self._polydata,
+                        self._geo_locator,
+                        self._landmarks,
+                        start_key,
+                        end_key,
+                        ma_normal,
+                        penalty_strength,
+                    )
+                    if result is not None:
+                        self._store_geodesic_actor(key, result.polyline, color, 4.0)
+                        changed_geodesics.add(key)
+
+        self._update_segments(changed_geodesics)
         self._vtk_widget.GetRenderWindow().Render()
+
 
     def _create_pair_geodesics(
         self,
@@ -399,6 +514,35 @@ class MainWindow(QtWidgets.QMainWindow):
         actor.GetProperty().SetLineWidth(line_width)
         self._renderer.AddActor(actor)
         self._geodesic_actors[key] = actor
+        self._geodesic_lines[key] = polyline
+
+    def _store_aux_actor(
+        self,
+        key: str,
+        polyline,
+        color: tuple[float, float, float],
+        line_width: float,
+    ) -> None:
+        mapper = vtkPolyDataMapper()
+        mapper.SetInputData(polyline)
+
+        actor = self._aux_actors.get(key)
+        if actor is None:
+            actor = vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(*color)
+            actor.GetProperty().SetLineWidth(line_width)
+            self._renderer.AddActor(actor)
+            self._aux_actors[key] = actor
+        else:
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(*color)
+            actor.GetProperty().SetLineWidth(line_width)
+
+    def _remove_aux_actor(self, key: str) -> None:
+        actor = self._aux_actors.pop(key, None)
+        if actor is not None:
+            self._renderer.RemoveActor(actor)
 
     def _create_simple_geodesic(
         self,
@@ -424,6 +568,43 @@ class MainWindow(QtWidgets.QMainWindow):
         actor = self._geodesic_actors.pop(key, None)
         if actor is not None:
             self._renderer.RemoveActor(actor)
+        self._geodesic_lines.pop(key, None)
+
+    def _build_segment_lut(self) -> vtkLookupTable:
+        lut = vtkLookupTable()
+        lut.SetNumberOfTableValues(9)
+        lut.Build()
+        lut.SetTableValue(0, 0.6, 0.6, 0.6, 1.0)
+        lut.SetTableValue(1, 0.89, 0.10, 0.11, 1.0)
+        lut.SetTableValue(2, 0.22, 0.49, 0.72, 1.0)
+        lut.SetTableValue(3, 0.30, 0.69, 0.29, 1.0)
+        lut.SetTableValue(4, 0.60, 0.31, 0.64, 1.0)
+        lut.SetTableValue(5, 1.00, 0.50, 0.00, 1.0)
+        lut.SetTableValue(6, 0.65, 0.34, 0.16, 1.0)
+        lut.SetTableValue(7, 0.97, 0.51, 0.75, 1.0)
+        lut.SetTableValue(8, 0.0, 1.0, 0.0, 1.0)
+        return lut
+
+    def _update_segments(self, changed_geodesics: set[str] | None = None) -> None:
+        if self._polydata is None or self._mesh_mapper is None:
+            return
+
+        segment_ids, self._segment_cache = compute_segment_ids_cached(
+            self._polydata,
+            self._landmarks,
+            self._geodesic_lines,
+            self._segment_cache,
+            changed_geodesics,
+        )
+        if self._segment_cache and "debug" in self._segment_cache:
+            self.statusBar().showMessage(self._segment_cache["debug"])
+        if segment_ids is None:
+            return
+
+        point_data = self._polydata.GetPointData()
+        point_data.AddArray(segment_ids)
+        point_data.SetScalars(segment_ids)
+        self._mesh_mapper.SetScalarRange(0, 8)
 
 
 def main() -> None:
