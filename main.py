@@ -5,7 +5,8 @@ from pathlib import Path
 from PySide6 import QtCore, QtGui, QtWidgets
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
-from vtkmodules.vtkCommonDataModel import vtkPointLocator
+from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPointLocator, vtkPolyData
+from vtkmodules.vtkCommonCore import vtkPoints
 from vtkmodules.vtkIOLegacy import vtkPolyDataReader
 from vtkmodules.vtkFiltersSources import vtkSphereSource
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
@@ -674,6 +675,90 @@ class MainWindow(QtWidgets.QMainWindow):
             actor.GetProperty().SetColor(*color)
             actor.GetProperty().SetLineWidth(line_width)
 
+    def _store_point_actor(
+        self,
+        key: str,
+        point_ids: list[int],
+        color: tuple[float, float, float],
+        point_size: float,
+    ) -> None:
+        if self._polydata is None or self._renderer is None:
+            return
+        if not point_ids:
+            self._remove_aux_actor(key)
+            return
+
+        points = vtkPoints()
+        verts = vtkCellArray()
+        for idx, point_id in enumerate(point_ids):
+            points.InsertNextPoint(self._polydata.GetPoint(point_id))
+            verts.InsertNextCell(1)
+            verts.InsertCellPoint(idx)
+
+        poly = vtkPolyData()
+        poly.SetPoints(points)
+        poly.SetVerts(verts)
+
+        mapper = vtkPolyDataMapper()
+        mapper.SetInputData(poly)
+
+        actor = self._aux_actors.get(key)
+        if actor is None:
+            actor = vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(*color)
+            actor.GetProperty().SetPointSize(point_size)
+            self._renderer.AddActor(actor)
+            self._aux_actors[key] = actor
+        else:
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(*color)
+            actor.GetProperty().SetPointSize(point_size)
+
+    def _show_failure_debug(self, debug_points: dict | None) -> None:
+        if not debug_points:
+            for key in (
+                "debug_boundary",
+                "debug_seed",
+                "debug_opposite",
+                "debug_seed_candidate",
+                "debug_opposite_seed",
+            ):
+                self._remove_aux_actor(key)
+            return
+
+        boundary_ids = list(debug_points.get("boundary_ids", []))
+        seed_id = debug_points.get("seed_id")
+        opposite_id = debug_points.get("opposite_id")
+        seed_candidate_id = debug_points.get("seed_candidate_id")
+        opposite_seed_id = debug_points.get("opposite_seed_id")
+
+        self._store_point_actor("debug_boundary", boundary_ids, (1.0, 0.85, 0.2), 3.0)
+        self._store_point_actor(
+            "debug_seed",
+            [seed_id] if seed_id is not None else [],
+            (1.0, 0.2, 0.2),
+            8.0,
+        )
+        self._store_point_actor(
+            "debug_opposite",
+            [opposite_id] if opposite_id is not None else [],
+            (0.2, 0.6, 1.0),
+            8.0,
+        )
+        self._store_point_actor(
+            "debug_seed_candidate",
+            [seed_candidate_id] if seed_candidate_id is not None else [],
+            (0.2, 1.0, 0.4),
+            7.0,
+        )
+        self._store_point_actor(
+            "debug_opposite_seed",
+            [opposite_seed_id] if opposite_seed_id is not None else [],
+            (0.6, 0.2, 1.0),
+            7.0,
+        )
+
     def _remove_aux_actor(self, key: str) -> None:
         actor = self._aux_actors.pop(key, None)
         if actor is not None:
@@ -748,6 +833,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 updates.clear()
         if segment_ids is None:
             return
+
+        debug_points = None
+        if self._segment_cache and "debug_points" in self._segment_cache:
+            debug_points = self._segment_cache.get("debug_points")
+        self._show_failure_debug(debug_points)
 
         point_data = self._polydata.GetPointData()
         point_data.AddArray(segment_ids)

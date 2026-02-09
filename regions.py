@@ -225,6 +225,56 @@ def _diagnose_segment_failure(
     return f"Segment {segment_id} failed: unknown"
 
 
+def _collect_failure_debug(
+    adjacency: list[set[int]],
+    locator,
+    landmarks: dict[str, Sequence[float]],
+    geodesic_lines: dict[str, vtkPolyData],
+    boundary_keys: Sequence[str],
+    opposite_key: str,
+    seed_key: str,
+    blocked_ids: set[int] | None = None,
+    seed_point: Sequence[float] | None = None,
+) -> dict[str, object] | None:
+    boundary_ids = _collect_boundary_ids(locator, landmarks, geodesic_lines, boundary_keys)
+    if boundary_ids is None:
+        return None
+
+    opposite_id = int(locator.FindClosestPoint(landmarks[opposite_key]))
+    seed_source = seed_point if seed_point is not None else landmarks[seed_key]
+    seed_id = int(locator.FindClosestPoint(seed_source))
+
+    opposite_seed = _find_non_boundary_seed(opposite_id, adjacency, boundary_ids)
+    if opposite_seed is None:
+        return {
+            "boundary_ids": list(boundary_ids),
+            "seed_id": seed_id,
+            "opposite_id": opposite_id,
+            "opposite_seed_id": None,
+            "seed_candidate_id": None,
+        }
+
+    wrong_component = _collect_component(opposite_seed, adjacency, boundary_ids)
+    seed_blocked = wrong_component
+    if blocked_ids:
+        seed_blocked = seed_blocked | blocked_ids
+
+    seed = _find_non_boundary_seed(
+        seed_id,
+        adjacency,
+        boundary_ids,
+        blocked_ids=seed_blocked,
+    )
+
+    return {
+        "boundary_ids": list(boundary_ids),
+        "seed_id": seed_id,
+        "opposite_id": opposite_id,
+        "opposite_seed_id": opposite_seed,
+        "seed_candidate_id": seed,
+    }
+
+
 def _seed_fallback_candidates(
     landmarks: dict[str, Sequence[float]],
     seed_key: str,
@@ -244,6 +294,16 @@ def _seed_fallback_candidates(
             )
         )
     return candidates
+
+
+def _polyline_midpoint_point(polyline: vtkPolyData) -> tuple[float, float, float] | None:
+    points = polyline.GetPoints()
+    if points is None:
+        return None
+    count = points.GetNumberOfPoints()
+    if count == 0:
+        return None
+    return points.GetPoint(count // 2)
 
 
 def _assign_boundary_vertices(
@@ -317,6 +377,7 @@ def compute_segment_ids_cached(
     debug_messages: dict[int, str] = cache.setdefault("debug_messages", {})
 
 
+
     if changed_geodesics is not None:
         changed_geodesics = set(changed_geodesics)
 
@@ -349,6 +410,7 @@ def compute_segment_ids_cached(
             cache["debug"] = " | ".join(ordered)
         else:
             cache.pop("debug", None)
+            cache.pop("debug_points", None)
 
 
     def compute_segment_with_fallback(
@@ -364,6 +426,12 @@ def compute_segment_ids_cached(
     ) -> tuple[bool, bool]:
         present = deps_present(deps)
         changed = False
+        seed_point = None
+        if present and deps:
+            boundary_key = deps[0]
+            boundary_polyline = geodesic_lines.get(boundary_key)
+            if boundary_polyline is not None:
+                seed_point = _polyline_midpoint_point(boundary_polyline)
         if required_landmarks is not None and not required_landmarks.issubset(landmarks.keys()):
             segments[seg_id] = None
             changed = deps_present_cache.get(seg_id) != present
@@ -381,6 +449,7 @@ def compute_segment_ids_cached(
                 opposite_key=opposite_key,
                 seed_key=seed_key,
                 blocked_ids=blocked_ids if blocked_ids else None,
+                seed_point=seed_point,
             )
             if segments[seg_id] is None and allow_fallback:
                 for seed_point in _seed_fallback_candidates(landmarks, seed_key, opposite_key):
@@ -400,6 +469,17 @@ def compute_segment_ids_cached(
                         break
             changed = True
             if segments[seg_id] is None:
+                cache["debug_points"] = _collect_failure_debug(
+                    adjacency,
+                    locator,
+                    landmarks,
+                    geodesic_lines,
+                    deps,
+                    opposite_key=opposite_key,
+                    seed_key=seed_key,
+                    blocked_ids=blocked_ids if blocked_ids else None,
+                    seed_point=seed_point,
+                )
                 update_debug_message(
                     seg_id,
                     _diagnose_segment_failure(
@@ -412,6 +492,7 @@ def compute_segment_ids_cached(
                         opposite_key=opposite_key,
                         seed_key=seed_key,
                         blocked_ids=blocked_ids if blocked_ids else None,
+                        seed_point=seed_point,
                     ),
                 )
             else:
@@ -428,7 +509,7 @@ def compute_segment_ids_cached(
         deps_present_cache[seg_id] = present
         return present, changed
 
-    seg1_deps = ["AB_anterior", "AB_posterior"]
+    seg1_deps = ["AB_posterior", "AB_anterior"]
     if {"X1_X2_anterior", "X1_X2_posterior"}.issubset(geodesic_lines.keys()):
         seg1_deps.extend(["X1_X2_anterior", "X1_X2_posterior"])
     seg1_present, seg1_changed = compute_segment_with_fallback(
@@ -442,7 +523,7 @@ def compute_segment_ids_cached(
         report_missing_deps=True,
     )
 
-    seg2_deps = ("CD_anterior", "CD_posterior")
+    seg2_deps = ("CD_posterior", "CD_anterior")
     seg2_present, seg2_changed = compute_segment_with_fallback(
         2,
         seg2_deps,
@@ -543,11 +624,11 @@ def compute_segment_ids_cached(
     if segments.get(6):
         blocked |= segments[6] or set()
 
-    seg7_deps = ("BH", "DI", "BD", "HI_aniso")
+    seg7_deps = ("BD", "DI", "BH", "HI_aniso")
     seg7_present, seg7_changed = compute_segment_with_fallback(
         7,
         seg7_deps,
-        opposite_key="F",
+        opposite_key="A",
         seed_key="D",
         blocked_ids=blocked if blocked else None,
         upstream_changed=seg6_changed,
@@ -572,7 +653,7 @@ def compute_segment_ids_cached(
     seg8_present, seg8_changed = compute_segment_with_fallback(
         8,
         seg8_deps,
-        opposite_key="F",
+        opposite_key="B",
         seed_key="D",
         blocked_ids=blocked if blocked else None,
         upstream_changed=seg7_changed,
@@ -601,7 +682,7 @@ def compute_segment_ids_cached(
     seg9_present, seg9_changed = compute_segment_with_fallback(
         9,
         seg9_deps,
-        opposite_key="H",
+        opposite_key="B",
         seed_key="E",
         blocked_ids=None,
         upstream_changed=seg8_changed,
