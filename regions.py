@@ -554,6 +554,10 @@ def compute_segment_ids(
     seg1_deps = ["AB_posterior", "AB_anterior"]
     if {"X1_X2_anterior", "X1_X2_posterior"}.issubset(geodesic_lines.keys()):
         seg1_deps.extend(["X1_X2_anterior", "X1_X2_posterior"])
+    if {"A1_A2_anterior", "A1_A2_posterior"}.issubset(geodesic_lines.keys()):
+        seg1_deps.extend(["A1_A2_anterior", "A1_A2_posterior"])      
+    if {"B1_B2_anterior", "B1_B2_posterior"}.issubset(geodesic_lines.keys()):
+        seg1_deps.extend(["B1_B2_anterior", "B1_B2_posterior"])            
     
     seg1, error_message, debug_points = compute_segment_with_fallback(
         1,
@@ -573,7 +577,12 @@ def compute_segment_ids(
     if seg1:
         segments[1] = seg1
 
-    seg2_deps = ("CD_posterior", "CD_anterior")
+    seg2_deps = ["CD_posterior", "CD_anterior"]
+    if {"C1_C2_anterior", "C1_C2_posterior"}.issubset(geodesic_lines.keys()):
+        seg2_deps.extend(["C1_C2_anterior", "C1_C2_posterior"])     
+    if {"D1_D2_anterior", "D1_D2_posterior"}.issubset(geodesic_lines.keys()):
+        seg2_deps.extend(["D1_D2_anterior", "D1_D2_posterior"])         
+
     seg2, error_message, debug_points = compute_segment_with_fallback(
         2,
         seg2_deps,

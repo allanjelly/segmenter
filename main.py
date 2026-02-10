@@ -127,29 +127,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._steps_list.itemChanged.connect(self._on_step_item_changed)
         self._steps_list.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         landmarks_layout.addWidget(self._steps_list)
+        self._delete_landmark_button = QtWidgets.QPushButton("Delete landmark", landmarks_group)
+        self._delete_landmark_button.clicked.connect(self._delete_current_landmark)
+        landmarks_layout.addWidget(self._delete_landmark_button)
+        self._calculate_regions_button = QtWidgets.QPushButton("Calculate regions", landmarks_group)
+        self._calculate_regions_button.clicked.connect(self._calculate_regions)
+        landmarks_layout.addWidget(self._calculate_regions_button)
 
         layout.addWidget(landmarks_group)
-
-        controls_group = QtWidgets.QGroupBox("Controls", panel)
-        controls_layout = QtWidgets.QVBoxLayout(controls_group)
-        controls_label = QtWidgets.QLabel(
-            "- Drag: rotate\n"
-            "- Right drag: zoom\n"
-            "- Middle drag: pan\n"
-            "- Mouse wheel: zoom\n"
-            "- Click mesh: set landmark\n"
-            "Keyboard:\n"
-            "- Space: next step\n"
-            "- Esc: previous step",
-            controls_group,
-        )
-        controls_label.setWordWrap(True)
-        controls_layout.addWidget(controls_label)
-
-        self._calculate_regions_button = QtWidgets.QPushButton("Calculate regions", controls_group)
-        self._calculate_regions_button.clicked.connect(self._calculate_regions)
-        controls_layout.addWidget(self._calculate_regions_button)
-        layout.addWidget(controls_group)
 
         messages_group = QtWidgets.QGroupBox("Messages", panel)
         messages_layout = QtWidgets.QVBoxLayout(messages_group)
@@ -316,18 +301,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_steps(self) -> list[dict[str, str]]:
         return [
-            {"key": "A", "label": "A: LSPV"},
-            {"key": "B", "label": "B: LIPV"},
-            {"key": "C", "label": "C: RSPV"},
-            {"key": "D", "label": "D: RIPV"},
-            {"key": "E", "label": "E: Mitral annulus 9 o'clock"},
-            {"key": "F", "label": "F: Mitral annulus 1 o'clock"},
-            {"key": "H", "label": "H: Mitral annulus 4 o'clock"},
-            {"key": "I", "label": "I: Mitral annulus 7 o'clock"},
-            {"key": "LAA1", "label": "LAA1: Appendage orifice point 1"},
-            {"key": "LAA2", "label": "LAA2: Appendage orifice point 2"},
-            {"key": "X1", "label": "X1: LAA/LSPV cut point 1"},
-            {"key": "X2", "label": "X2: LAA/LSPV cut point 2"},
+            {"key": "A", "label": "A - LSPA"},
+            {"key": "B", "label": "B - LIPA"},
+            {"key": "C", "label": "C - RSPA"},
+            {"key": "D", "label": "D - RIPA"},      
+            {"key": "E", "label": "E - MA 9 o'clock"},
+            {"key": "F", "label": "F - MA 1 o'clock"},
+            {"key": "H", "label": "H - MA 4 o'clock"},
+            {"key": "I", "label": "I - MA 7 o'clock"},                  
+            {"key": "LAA1", "label": "LAA1 - point 1"},
+            {"key": "LAA2", "label": "LAA2 - point 2"},            
+            {"key": "A1", "label": "  A1 - LSPV sup dist"},
+            {"key": "A2", "label": "  A2 - LSPV inf dist"},
+            {"key": "B1", "label": "  B1 - LIPV sup dist"},
+            {"key": "B2", "label": "  B2 - LIPV inf dist"},            
+            {"key": "C1", "label": "  C1 - RSPV sup dist"},
+            {"key": "C2", "label": "  C2 - RSPV inf dist"},
+            {"key": "D1", "label": "  D1 - RIPV sup dist"},
+            {"key": "D2", "label": "  D2 - RIPV inf dist"},                                    
+            
+            {"key": "X1", "label": "    X1: LAA/LSPV cut point 1"},
+            {"key": "X2", "label": "    X2: LAA/LSPV cut point 2"},
         ]
 
     def _populate_steps(self) -> None:
@@ -546,6 +540,15 @@ class MainWindow(QtWidgets.QMainWindow):
         item.setCheckState(QtCore.Qt.Checked)
         self._updating_steps = False
 
+    def _mark_step_incomplete(self, index: int) -> None:
+        item = self._steps_list.item(index)
+        if item is None:
+            return
+        self._updating_steps = True
+        item.setData(QtCore.Qt.UserRole + 1, False)
+        item.setCheckState(QtCore.Qt.Unchecked)
+        self._updating_steps = False
+
     def _update_landmark_actor(self, key: str, point: tuple[float, float, float]) -> None:
         if self._renderer is None:
             return
@@ -568,6 +571,49 @@ class MainWindow(QtWidgets.QMainWindow):
 
         actor.SetPosition(point)
 
+    def _delete_current_landmark(self) -> None:
+        if not self._steps:
+            return
+        step = self._steps[self._current_step_index]
+        key = step["key"]
+        if key not in self._landmarks:
+            return
+        self._landmarks.pop(key, None)
+
+        actor = self._landmark_actors.pop(key, None)
+        if actor is not None and self._renderer is not None:
+            self._renderer.RemoveActor(actor)
+
+        self._remove_dependent_geodesics(key)
+        self._mark_step_incomplete(self._current_step_index)
+        if self._vtk_widget is not None:
+            self._vtk_widget.GetRenderWindow().Render()
+
+    def _remove_dependent_geodesics(self, landmark_key: str) -> None:
+        dependencies = (
+            ("AB_anterior", {"A", "B", "C", "E"}),
+            ("AB_posterior", {"A", "B", "C", "E"}),
+            ("CD_anterior", {"A", "C", "D", "E"}),
+            ("CD_posterior", {"A", "C", "D", "E"}),
+            ("AC", {"A", "C"}),
+            ("BD", {"B", "D"}),
+            ("CE", {"C", "E"}),
+            ("AF", {"A", "F"}),
+            ("BH", {"B", "H"}),
+            ("DI", {"D", "I"}),
+            ("LAA1_LAA2_anterior", {"LAA1", "LAA2", "D", "F"}),
+            ("LAA1_LAA2_posterior", {"LAA1", "LAA2", "D", "F"}),
+            ("X1_X2_anterior", {"X1", "X2", "D", "F"}),
+            ("X1_X2_posterior", {"X1", "X2", "D", "F"}),
+            ("EF_aniso", {"E", "F", "H", "I"}),
+            ("FH_aniso", {"E", "F", "H", "I"}),
+            ("HI_aniso", {"E", "F", "H", "I"}),
+            ("IE_aniso", {"E", "F", "H", "I"}),
+        )
+        for geodesic_key, required in dependencies:
+            if landmark_key in required:
+                self._remove_geodesic(geodesic_key)
+
     def _update_geodesics(self, changed_landmarks: set[str] | None = None) -> None:
         if self._polydata is None or self._geo_locator is None or self._renderer is None:
             return
@@ -583,15 +629,31 @@ class MainWindow(QtWidgets.QMainWindow):
             ab_ok = True
             cd_ok = True
             if ab_changed:
-                self._remove_geodesic("AB_anterior")
-                self._remove_geodesic("AB_posterior")
-                ab_ok = self._create_pair_geodesics("A", "B", ("A", "B", "C"))
-                changed_geodesics.update({"AB_anterior", "AB_posterior"})
+                updated, ab_ok = self._update_landmark_pair_geodesics(
+                    "A",
+                    "B",
+                    ("A", "B", "C"),
+                    "AB",
+                    primary_color=(0.9, 0.6, 0.1),
+                    alternate_color=(0.2, 0.7, 0.2),
+                    line_width=6.0,
+                    anterior_ref_key="E",
+                    plane_origin_key="A",
+                )
+                changed_geodesics.update(updated)
             if cd_changed:
-                self._remove_geodesic("CD_anterior")
-                self._remove_geodesic("CD_posterior")
-                cd_ok = self._create_pair_geodesics("C", "D", ("A", "C", "D"))
-                changed_geodesics.update({"CD_anterior", "CD_posterior"})
+                updated, cd_ok = self._update_landmark_pair_geodesics(
+                    "C",
+                    "D",
+                    ("A", "C", "D"),
+                    "CD",
+                    primary_color=(0.9, 0.6, 0.1),
+                    alternate_color=(0.2, 0.7, 0.2),
+                    line_width=6.0,
+                    anterior_ref_key="E",
+                    plane_origin_key="A",
+                )
+                changed_geodesics.update(updated)
             if ab_changed and cd_changed and ab_ok and cd_ok:
                 self._append_message("AB/CD geodesics updated")
 
@@ -600,54 +662,48 @@ class MainWindow(QtWidgets.QMainWindow):
             and "C" in self._landmarks
             and ({"A", "C"} & changed_landmarks or "AC" not in self._geodesic_lines)
         ):
-            self._remove_geodesic("AC")
-            self._create_simple_geodesic("AC", "A", "C", (0.2, 0.8, 1.0), 6.0)
-            changed_geodesics.add("AC")
+            if self._update_simple_geodesic("AC", "A", "C", (0.2, 0.8, 1.0), 6.0):
+                changed_geodesics.add("AC")
 
         if (
             "B" in self._landmarks
             and "D" in self._landmarks
             and ({"B", "D"} & changed_landmarks or "BD" not in self._geodesic_lines)
         ):
-            self._remove_geodesic("BD")
-            self._create_simple_geodesic("BD", "B", "D", (0.2, 0.8, 1.0), 6.0)
-            changed_geodesics.add("BD")
+            if self._update_simple_geodesic("BD", "B", "D", (0.2, 0.8, 1.0), 6.0):
+                changed_geodesics.add("BD")
 
         if (
             "C" in self._landmarks
             and "E" in self._landmarks
             and ({"C", "E"} & changed_landmarks or "CE" not in self._geodesic_lines)
         ):
-            self._remove_geodesic("CE")
-            self._create_simple_geodesic("CE", "C", "E", (0.7, 0.9, 0.3), 6.0)
-            changed_geodesics.add("CE")
+            if self._update_simple_geodesic("CE", "C", "E", (0.7, 0.9, 0.3), 6.0):
+                changed_geodesics.add("CE")
 
         if (
             "A" in self._landmarks
             and "F" in self._landmarks
             and ({"A", "F"} & changed_landmarks or "AF" not in self._geodesic_lines)
         ):
-            self._remove_geodesic("AF")
-            self._create_simple_geodesic("AF", "A", "F", (0.7, 0.9, 0.3), 6.0)
-            changed_geodesics.add("AF")
+            if self._update_simple_geodesic("AF", "A", "F", (0.7, 0.9, 0.3), 6.0):
+                changed_geodesics.add("AF")
 
         if (
             "B" in self._landmarks
             and "H" in self._landmarks
             and ({"B", "H"} & changed_landmarks or "BH" not in self._geodesic_lines)
         ):
-            self._remove_geodesic("BH")
-            self._create_simple_geodesic("BH", "B", "H", (0.7, 0.9, 0.3), 6.0)
-            changed_geodesics.add("BH")
+            if self._update_simple_geodesic("BH", "B", "H", (0.7, 0.9, 0.3), 6.0):
+                changed_geodesics.add("BH")
 
         if (
             "D" in self._landmarks
             and "I" in self._landmarks
             and ({"D", "I"} & changed_landmarks or "DI" not in self._geodesic_lines)
         ):
-            self._remove_geodesic("DI")
-            self._create_simple_geodesic("DI", "D", "I", (0.7, 0.9, 0.3), 6.0)
-            changed_geodesics.add("DI")
+            if self._update_simple_geodesic("DI", "D", "I", (0.7, 0.9, 0.3), 6.0):
+                changed_geodesics.add("DI")
 
         if (
             "LAA1" in self._landmarks
@@ -661,33 +717,122 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
             )
         ):
-            self._remove_geodesic("LAA1_LAA2_anterior")
-            self._remove_geodesic("LAA1_LAA2_posterior")
-            primary_key, primary, alternate_key, alternate = create_pair_geodesics(
-                self._polydata,
-                self._geo_locator,
-                self._landmarks,
+            updated, ok = self._update_landmark_pair_geodesics(
                 "LAA1",
                 "LAA2",
                 ("LAA1", "LAA2", "D"),
+                "LAA1_LAA2",
+                primary_color=(0.9, 0.6, 0.1),
+                alternate_color=(0.2, 0.7, 0.2),
+                line_width=6.0,
                 anterior_ref_key="F",
                 plane_origin_key="D",
             )
-            if primary_key.endswith("_anterior"):
-                resolved_primary = "LAA1_LAA2_anterior"
-                resolved_alternate = "LAA1_LAA2_posterior"
-            else:
-                resolved_primary = "LAA1_LAA2_posterior"
-                resolved_alternate = "LAA1_LAA2_anterior"
-            self._store_geodesic_actor(resolved_primary, primary.polyline, (0.9, 0.6, 0.1), 6.0)
-            self._append_message(f"Geodesic {resolved_primary} updated")
-            changed_geodesics.add(resolved_primary)
-            if alternate is None:
-                self._set_error_message("Alternate LAA1_LAA2 geodesic not found")
-            else:
-                self._store_geodesic_actor(resolved_alternate, alternate.polyline, (0.2, 0.7, 0.2), 6.0)
-                self._append_message(f"Geodesic {resolved_alternate} updated")
-                changed_geodesics.add(resolved_alternate)
+            changed_geodesics.update(updated)
+
+# A1=A2
+        if (
+            "A1" in self._landmarks
+            and "A2" in self._landmarks
+            and "D" in self._landmarks
+            and "F" in self._landmarks
+            and (
+                {"A1", "A2", "D", "F"} & changed_landmarks
+                or not {"A1_A2_anterior", "A1_A2_posterior"}.issubset(
+                    self._geodesic_lines.keys()
+                )
+            )
+        ):
+            updated, ok = self._update_landmark_pair_geodesics(
+                "A1",
+                "A2",
+                ("A1", "A2", "D"),
+                "A1_A2",
+                primary_color=(0.9, 0.6, 0.1),
+                alternate_color=(0.2, 0.7, 0.2),
+                line_width=6.0,
+                anterior_ref_key="F",
+                plane_origin_key="D",
+            )
+            changed_geodesics.update(updated)
+
+# B1=B2
+        if (
+            "B1" in self._landmarks
+            and "B2" in self._landmarks
+            and "D" in self._landmarks
+            and "F" in self._landmarks
+            and (
+                {"B1", "B2", "D", "F"} & changed_landmarks
+                or not {"B1_B2_anterior", "B1_B2_posterior"}.issubset(
+                    self._geodesic_lines.keys()
+                )
+            )
+        ):
+            updated, ok = self._update_landmark_pair_geodesics(
+                "B1",
+                "B2",
+                ("B1", "B2", "D"),
+                "B1_B2",
+                primary_color=(0.9, 0.6, 0.1),
+                alternate_color=(0.2, 0.7, 0.2),
+                line_width=6.0,
+                anterior_ref_key="F",
+                plane_origin_key="D",
+            )
+            changed_geodesics.update(updated)            
+
+# C1=C2
+        if (
+            "C1" in self._landmarks
+            and "C2" in self._landmarks
+            and "A" in self._landmarks
+            and "E" in self._landmarks
+            and (
+                {"C1", "C2", "A", "E"} & changed_landmarks
+                or not {"C1_C2_anterior", "C1_C2_posterior"}.issubset(
+                    self._geodesic_lines.keys()
+                )
+            )
+        ):
+            updated, ok = self._update_landmark_pair_geodesics(
+                "C1",
+                "C2",
+                ("C1", "C2", "A"),
+                "C1_C2",
+                primary_color=(0.9, 0.6, 0.1),
+                alternate_color=(0.2, 0.7, 0.2),
+                line_width=6.0,
+                anterior_ref_key="E",
+                plane_origin_key="A",
+            )
+            changed_geodesics.update(updated)
+
+# D1=D2
+        if (
+            "D1" in self._landmarks
+            and "D2" in self._landmarks
+            and "A" in self._landmarks
+            and "E" in self._landmarks
+            and (
+                {"D1", "D2", "A", "E"} & changed_landmarks
+                or not {"D1_D2_anterior", "D1_D2_posterior"}.issubset(
+                    self._geodesic_lines.keys()
+                )
+            )
+        ):
+            updated, ok = self._update_landmark_pair_geodesics(
+                "D1",
+                "D2",
+                ("D1", "D2", "A"),
+                "D1_D2",
+                primary_color=(0.9, 0.6, 0.1),
+                alternate_color=(0.2, 0.7, 0.2),
+                line_width=6.0,
+                anterior_ref_key="E",
+                plane_origin_key="A",
+            )
+            changed_geodesics.update(updated)
 
         if "X1" not in self._landmarks or "X2" not in self._landmarks:
             self._remove_geodesic("X1_X2_anterior")
@@ -698,33 +843,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._geodesic_lines.keys()
             )
         ):
-            self._remove_geodesic("X1_X2_anterior")
-            self._remove_geodesic("X1_X2_posterior")
-            primary_key, primary, alternate_key, alternate = create_pair_geodesics(
-                self._polydata,
-                self._geo_locator,
-                self._landmarks,
+            updated, ok = self._update_landmark_pair_geodesics(
                 "X1",
                 "X2",
                 ("X1", "X2", "D"),
+                "X1_X2",
+                primary_color=(0.8, 0.8, 0.2),
+                alternate_color=(0.2, 0.8, 0.8),
+                line_width=6.0,
                 anterior_ref_key="F",
                 plane_origin_key="D",
             )
-            if primary_key.endswith("_anterior"):
-                resolved_primary = "X1_X2_anterior"
-                resolved_alternate = "X1_X2_posterior"
-            else:
-                resolved_primary = "X1_X2_posterior"
-                resolved_alternate = "X1_X2_anterior"
-            self._store_geodesic_actor(resolved_primary, primary.polyline, (0.8, 0.8, 0.2), 6.0)
-            self._append_message(f"Geodesic {resolved_primary} updated")
-            changed_geodesics.add(resolved_primary)
-            if alternate is None:
-                self._set_error_message("Alternate X1_X2 geodesic not found")
-            else:
-                self._store_geodesic_actor(resolved_alternate, alternate.polyline, (0.2, 0.8, 0.8), 6.0)
-                self._append_message(f"Geodesic {resolved_alternate} updated")
-                changed_geodesics.add(resolved_alternate)
+            changed_geodesics.update(updated)
 
         has_ma_points = {"E", "F", "H", "I"}.issubset(self._landmarks.keys())
         if not has_ma_points:
@@ -772,29 +902,53 @@ class MainWindow(QtWidgets.QMainWindow):
         self._vtk_widget.GetRenderWindow().Render()
 
 
-    def _create_pair_geodesics(
+    def _update_landmark_pair_geodesics(
         self,
         start_key: str,
         end_key: str,
         plane_keys: tuple[str, str, str],
-    ) -> bool:
-        primary_key, primary, alternate_key, alternate = create_pair_geodesics(
+        name_prefix: str,
+        primary_color: tuple[float, float, float],
+        alternate_color: tuple[float, float, float],
+        line_width: float,
+        anterior_ref_key: str,
+        plane_origin_key: str,
+    ) -> tuple[set[str], bool]:
+        updated: set[str] = set()
+        anterior_key = f"{name_prefix}_anterior"
+        posterior_key = f"{name_prefix}_posterior"
+        self._remove_geodesic(anterior_key)
+        self._remove_geodesic(posterior_key)
+
+        primary_key, primary, _alternate_key, alternate = create_pair_geodesics(
             self._polydata,
             self._geo_locator,
             self._landmarks,
             start_key,
             end_key,
             plane_keys,
+            anterior_ref_key=anterior_ref_key,
+            plane_origin_key=plane_origin_key,
         )
+        if primary_key.endswith("_anterior"):
+            resolved_primary = anterior_key
+            resolved_alternate = posterior_key
+        else:
+            resolved_primary = posterior_key
+            resolved_alternate = anterior_key
 
-        self._store_geodesic_actor(primary_key, primary.polyline, (0.9, 0.6, 0.1), 6.0)
-        self._append_message(f"Geodesic {primary_key} updated")
+        self._store_geodesic_actor(resolved_primary, primary.polyline, primary_color, line_width)
+        self._append_message(f"Geodesic {resolved_primary} updated")
+        updated.add(resolved_primary)
+
         if alternate is None:
-            self._set_error_message(f"Alternate {start_key}{end_key} geodesic not found")
-            return False
-        self._store_geodesic_actor(alternate_key, alternate.polyline, (0.2, 0.7, 0.2), 6.0)
-        self._append_message(f"Geodesic {alternate_key} updated")
-        return True
+            self._set_error_message(f"Alternate {name_prefix} geodesic not found")
+            return updated, False
+
+        self._store_geodesic_actor(resolved_alternate, alternate.polyline, alternate_color, line_width)
+        self._append_message(f"Geodesic {resolved_alternate} updated")
+        updated.add(resolved_alternate)
+        return updated, True
 
     def _store_geodesic_actor(
         self,
@@ -952,6 +1106,18 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._append_message(f"Geodesic {key} updated")
         self._store_geodesic_actor(key, result.polyline, color, line_width)
+
+    def _update_simple_geodesic(
+        self,
+        key: str,
+        start_key: str,
+        end_key: str,
+        color: tuple[float, float, float],
+        line_width: float,
+    ) -> bool:
+        self._remove_geodesic(key)
+        self._create_simple_geodesic(key, start_key, end_key, color, line_width)
+        return key in self._geodesic_lines
 
     def _remove_geodesic(self, key: str) -> None:
         actor = self._geodesic_actors.pop(key, None)
