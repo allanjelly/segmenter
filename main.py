@@ -51,6 +51,7 @@ def detect_os() -> str:
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, initial_file: str | None = None) -> None:
         super().__init__()
+        print(f"[DEBUG] MainWindow.__init__ started, platform={sys.platform}", flush=True)
         self.setWindowTitle("Segmenter")
         self.resize(1200, 800)
         self._mesh_actor = None
@@ -81,12 +82,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._error_box = None
         self._updating_steps = False
 
+        print(f"[DEBUG] Creating central widget", flush=True)
         central = QtWidgets.QWidget(self)
         layout = QtWidgets.QHBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        print(f"[DEBUG] Building left panel", flush=True)
         self._left_panel = self._build_left_panel()
+        print(f"[DEBUG] Creating VTK widget", flush=True)
         self._vtk_widget = QVTKRenderWindowInteractor(central)
+        print(f"[DEBUG] VTK widget created", flush=True)
         self._vtk_widget.setFocusPolicy(QtCore.Qt.StrongFocus)
         self._vtk_widget.setFocus()
 
@@ -94,13 +99,18 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self._vtk_widget, stretch=1)
         self.setCentralWidget(central)
 
-        render_window = self._vtk_widget.GetRenderWindow()
-        # On macOS, ensure proper rendering context
-        if sys.platform == "darwin":
-            render_window.SetMultiSamples(0)
-        render_window.AddRenderer(self._renderer)
+        # On macOS, defer all VTK operations until window is shown
+        if sys.platform != "darwin":
+            print(f"[DEBUG] Setting up VTK render window (non-macOS)", flush=True)
+            render_window = self._vtk_widget.GetRenderWindow()
+            render_window.AddRenderer(self._renderer)
+        else:
+            print(f"[DEBUG] Deferring VTK setup for macOS", flush=True)
+        
+        print(f"[DEBUG] Setting up shortcuts", flush=True)
         self._setup_shortcuts()
         self.statusBar().showMessage("")
+        print(f"[DEBUG] MainWindow.__init__ completed", flush=True)
 
     def _build_left_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget(self)
@@ -168,29 +178,36 @@ class MainWindow(QtWidgets.QMainWindow):
         return panel
 
     def showEvent(self, event: QtCore.QEvent) -> None:
+        print(f"[DEBUG] showEvent called", flush=True)
         super().showEvent(event)
         if self._initial_file:
+            print(f"[DEBUG] Initial file: {self._initial_file}", flush=True)
             self._pending_file = self._initial_file
         # Delay VTK initialization to ensure window is fully visible on macOS
         if self._vtk_widget is not None:
             if sys.platform == "darwin":
+                print(f"[DEBUG] Scheduling VTK init for macOS (200ms delay)", flush=True)
                 QtCore.QTimer.singleShot(200, self._initialize_vtk)
             else:
+                print(f"[DEBUG] Scheduling VTK init immediately", flush=True)
                 QtCore.QTimer.singleShot(0, self._initialize_vtk)
 
     def _initialize_vtk(self) -> None:
         try:
             if self._vtk_widget is None:
                 return
-                
+            
             self._append_message("Initializing VTK...")
             
             # Get render window before Initialize to set properties
             render_window = self._vtk_widget.GetRenderWindow()
             
-            # Critical for macOS: disable off-screen rendering
+            # On macOS, set up renderer now (deferred from __init__)
             if sys.platform == "darwin":
+                self._append_message("Setting up macOS renderer...")
                 render_window.SetOffScreenRendering(0)
+                render_window.SetMultiSamples(0)
+                render_window.AddRenderer(self._renderer)
             
             self._vtk_widget.Initialize()
             self._append_message("VTK initialized")
