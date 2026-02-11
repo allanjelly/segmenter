@@ -247,14 +247,6 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._on_left_button_press,
                 )
                 print(f"[DEBUG] Observer added", flush=True)
-                
-                # Critical for macOS: Disable VTK's own event loop
-                # The QVTKRenderWindowInteractor will manage events through Qt
-                if sys.platform == "darwin":
-                    print(f"[DEBUG] Configuring interactor for macOS", flush=True)
-                    # Don't let VTK interactor start its own event loop
-                    interactor.EnableRenderOff()
-                    print(f"[DEBUG] Interactor configured", flush=True)
             
             print(f"[DEBUG] Calling render_window.Render()", flush=True)
             render_window.Render()
