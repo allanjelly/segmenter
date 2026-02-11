@@ -222,15 +222,22 @@ class MainWindow(QtWidgets.QMainWindow):
             print(f"[DEBUG] Initialize() completed", flush=True)
             self._append_message("VTK initialized")
             
+            print(f"[DEBUG] Getting interactor", flush=True)
             interactor = render_window.GetInteractor()
+            print(f"[DEBUG] Got interactor: {interactor is not None}", flush=True)
             if interactor is not None:
+                print(f"[DEBUG] Setting interactor style", flush=True)
                 interactor.SetInteractorStyle(vtkInteractorStyleTrackballCamera())
+                print(f"[DEBUG] Adding observer", flush=True)
                 interactor.AddObserver(
                     "LeftButtonPressEvent",
                     self._on_left_button_press,
                 )
+                print(f"[DEBUG] Observer added", flush=True)
             
+            print(f"[DEBUG] Calling render_window.Render()", flush=True)
             render_window.Render()
+            print(f"[DEBUG] Render() completed", flush=True)
             self._append_message("Renderer ready")
             
             if self._pending_file:
