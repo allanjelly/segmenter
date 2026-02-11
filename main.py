@@ -240,19 +240,29 @@ class MainWindow(QtWidgets.QMainWindow):
             print(f"[DEBUG] Render() completed", flush=True)
             self._append_message("Renderer ready")
             
+            print(f"[DEBUG] Checking pending file: {self._pending_file}", flush=True)
             if self._pending_file:
                 file_path = self._pending_file
                 self._pending_file = None
+                print(f"[DEBUG] About to load mesh: {file_path}", flush=True)
                 self._append_message(f"Loading mesh: {Path(file_path).name}")
                 self.load_mesh(file_path)
+                print(f"[DEBUG] load_mesh() returned", flush=True)
+            else:
+                print(f"[DEBUG] No pending file to load", flush=True)
+            print(f"[DEBUG] _initialize_vtk completed successfully", flush=True)
         except Exception as e:
+            print(f"[DEBUG] Exception in _initialize_vtk: {str(e)}", flush=True)
             self._append_error(f"VTK initialization error: {str(e)}")
             self._append_error(traceback.format_exc())
 
     def load_mesh(self, file_path: str) -> None:
+        print(f"[DEBUG] load_mesh called: {file_path}", flush=True)
         try:
             self._append_message(f"Loading mesh from: {file_path}")
+            print(f"[DEBUG] About to read VTK polydata", flush=True)
             polydata = self._read_vtk_polydata(Path(file_path))
+            print(f"[DEBUG] read_vtk_polydata returned: {polydata is not None}", flush=True)
             if polydata is None:
                 self._append_error("Failed to read VTK polydata - file may be corrupt or empty")
                 QtWidgets.QMessageBox.warning(
@@ -262,16 +272,25 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
                 return
 
+            print(f"[DEBUG] Setting polydata and building locators", flush=True)
             self._polydata = polydata
             self._mesh_file_path = file_path
             self._point_locator = vtkPointLocator()
             self._point_locator.SetDataSet(polydata)
+            print(f"[DEBUG] BuildLocator...", flush=True)
             self._point_locator.BuildLocator()
+            print(f"[DEBUG] build_point_locator...", flush=True)
             self._geo_locator = build_point_locator(polydata)
+            print(f"[DEBUG] Locators built", flush=True)
 
+            print(f"[DEBUG] Displaying polydata...", flush=True)
             self._display_polydata(polydata)
+            print(f"[DEBUG] Polydata displayed", flush=True)
+            print(f"[DEBUG] Updating mesh info...", flush=True)
             self._update_mesh_info(polydata, file_path)
+            print(f"[DEBUG] Mesh info updated", flush=True)
             self._append_message(f"Mesh loaded: {Path(file_path).name}")
+            print(f"[DEBUG] load_mesh completed successfully", flush=True)
         except Exception as e:
             self._append_error(f"Error loading mesh: {str(e)}")
             QtWidgets.QMessageBox.critical(
@@ -320,7 +339,9 @@ class MainWindow(QtWidgets.QMainWindow):
         return polydata
 
     def _display_polydata(self, polydata) -> None:
+        print(f"[DEBUG] _display_polydata called", flush=True)
         try:
+            print(f"[DEBUG] Creating mapper and actor", flush=True)
             mapper = vtkPolyDataMapper()
             mapper.SetInputData(polydata)
             mapper.SetScalarModeToUsePointData()
@@ -333,17 +354,24 @@ class MainWindow(QtWidgets.QMainWindow):
             actor.SetMapper(mapper)
 
             if self._mesh_actor is not None:
+                print(f"[DEBUG] Removing old mesh actor", flush=True)
                 self._renderer.RemoveActor(self._mesh_actor)
 
+            print(f"[DEBUG] Adding mesh actor to renderer", flush=True)
             self._mesh_actor = actor
             self._mesh_mapper = mapper
             self._renderer.AddActor(actor)
+            print(f"[DEBUG] Resetting camera", flush=True)
             self._renderer.ResetCamera()
+            print(f"[DEBUG] Camera reset", flush=True)
             
             if self._vtk_widget is not None:
+                print(f"[DEBUG] About to call Render() from _display_polydata", flush=True)
                 self._vtk_widget.GetRenderWindow().Render()
+                print(f"[DEBUG] Render() completed in _display_polydata", flush=True)
                 self._append_message("Mesh displayed")
         except Exception as e:
+            print(f"[DEBUG] Exception in _display_polydata: {str(e)}", flush=True)
             self._append_error(f"Display error: {str(e)}")
             self._append_error(traceback.format_exc())
 
