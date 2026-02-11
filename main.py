@@ -325,24 +325,32 @@ class MainWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(50, self._macos_init_step_2)
     
     def _macos_init_step_2(self) -> None:
-        """Step 2: Initialize VTK widget"""
-        print(f"[DEBUG] macOS init step 2 - calling Initialize()", flush=True)
+        """Step 2: Add renderer WITHOUT calling Initialize - let it auto-initialize"""
+        print(f"[DEBUG] macOS init step 2 - SKIP manual Initialize(), auto-init instead", flush=True)
         self._append_message("Initializing VTK (step 2)...")
-        self._vtk_widget.Initialize()
-        print(f"[DEBUG] Initialize() done, scheduling step 3", flush=True)
+        
+        # Don't call Initialize() manually on macOS - it breaks the event loop
+        # Instead, just set up the renderer and let QVTKRenderWindowInteractor auto-initialize
+        render_window = self._vtk_widget.GetRenderWindow()
+        render_window.AddRenderer(self._renderer)
+        print(f"[DEBUG] Renderer added, scheduling step 3", flush=True)
         QtCore.QTimer.singleShot(50, self._macos_init_step_3)
     
     def _macos_init_step_3(self) -> None:
-        """Step 3: Add renderer and setup interactor"""
-        print(f"[DEBUG] macOS init step 3", flush=True)
+        """Step 3: Setup interactor"""
+        print(f"[DEBUG] macOS init step 3 - setting up interactor", flush=True)
         self._append_message("Initializing VTK (step 3)...")
         render_window = self._vtk_widget.GetRenderWindow()
-        render_window.AddRenderer(self._renderer)
         
+        # Get or create interactor
         interactor = render_window.GetInteractor()
+        print(f"[DEBUG] Got interactor: {interactor is not None}", flush=True)
         if interactor is not None:
+            print(f"[DEBUG] Setting interactor style", flush=True)
             interactor.SetInteractorStyle(vtkInteractorStyleTrackballCamera())
+            print(f"[DEBUG] Adding observer", flush=True)
             interactor.AddObserver("LeftButtonPressEvent", self._on_left_button_press)
+            print(f"[DEBUG] Observer added", flush=True)
         
         print(f"[DEBUG] macOS init step 3 done, scheduling step 4", flush=True)
         QtCore.QTimer.singleShot(50, self._macos_init_step_4)
