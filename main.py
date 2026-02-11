@@ -81,6 +81,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._message_box = None
         self._error_box = None
         self._updating_steps = False
+        self._deferred_mesh_path = None  # For macOS deferred loading
 
         print(f"[DEBUG] Creating central widget", flush=True)
         central = QtWidgets.QWidget(self)
@@ -252,15 +253,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 print(f"[DEBUG] Observer added", flush=True)
             
             print(f"[DEBUG] Calling render_window.Render()", flush=True)
-            render_window.Render()
-            print(f"[DEBUG] Render() completed", flush=True)
-            
-            # On macOS, explicitly update and show the widget
-            if sys.platform == "darwin":
-                print(f"[DEBUG] Updating VTK widget on macOS", flush=True)
-                self._vtk_widget.update()
-                self._vtk_widget.repaint()
-                print(f"[DEBUG] Widget update/repaint done", flush=True)
+            # On macOS, skip the initial render to avoid blocking the event loop
+            # The first render will happen when the mesh is displayed
+            if sys.platform != "darwin":
+                render_window.Render()
+                print(f"[DEBUG] Render() completed", flush=True)
+            else:
+                print(f"[DEBUG] Skipping initial Render() on macOS", flush=True)
             
             self._append_message("Renderer ready")
             
@@ -273,7 +272,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 # On macOS, defer mesh loading to avoid blocking
                 if sys.platform == "darwin":
                     print(f"[DEBUG] Scheduling deferred mesh load on macOS", flush=True)
-                    QtCore.QTimer.singleShot(50, lambda: self._deferred_load_mesh(file_path))
+                    self._deferred_mesh_path = file_path
+                    QtCore.QTimer.singleShot(50, self._deferred_load_mesh_callback)
                 else:
                     self.load_mesh(file_path)
                     print(f"[DEBUG] load_mesh() returned", flush=True)
@@ -286,6 +286,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self._append_error(traceback.format_exc())
         
         print(f"[DEBUG] About to return from _initialize_vtk", flush=True)
+    
+    def _deferred_load_mesh_callback(self) -> None:
+        """Timer callback for deferred mesh loading on macOS"""
+        print(f"[DEBUG] _deferred_load_mesh_callback fired!", flush=True)
+        if self._deferred_mesh_path:
+            file_path = self._deferred_mesh_path
+            self._deferred_mesh_path = None
+            self._deferred_load_mesh(file_path)
+        else:
+            print(f"[DEBUG] No deferred mesh path found", flush=True)
     
     def _deferred_load_mesh(self, file_path: str) -> None:
         """Load mesh in a deferred callback to keep event loop responsive on macOS"""
