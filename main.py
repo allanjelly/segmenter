@@ -391,17 +391,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self._append_message("Application ready")
     
     def _deferred_render(self) -> None:
-        """Deferred render call for macOS to keep event loop responsive"""
-        print(f"[DEBUG] _deferred_render called", flush=True)
+        """Deferred render call for macOS - called after window is fully ready"""
+        print(f"[DEBUG] _deferred_render called (delayed init complete)", flush=True)
         if self._vtk_widget is not None:
-            # On macOS, DON'T call Render() - it blocks even in deferred callbacks
-            # Instead, just update the widget and let Qt's paint event trigger VTK rendering
-            print(f"[DEBUG] Scheduling widget update (no explicit Render())", flush=True)
-            self._vtk_widget.update()
-            # Bring the main window to front and activate it
-            self.activateWindow()
-            self.raise_()
-            print(f"[DEBUG] Widget update scheduled, window activated", flush=True)
+            try:
+                # Now that the window has been visible for 500ms, try calling Render()
+                # The event loop should be stable and the OpenGL context ready
+                print(f"[DEBUG] Calling Render() with stable event loop", flush=True)
+                self._vtk_widget.GetRenderWindow().Render()
+                print(f"[DEBUG] *** RENDER COMPLETED SUCCESSFULLY! ***", flush=True)
+                self.activateWindow()
+                self.raise_()
+            except Exception as e:
+                print(f"[DEBUG] Render exception: {e}", flush=True)
+                self._append_error(f"Render error: {e}")
 
     def load_mesh(self, file_path: str) -> None:
         print(f"[DEBUG] load_mesh called: {file_path}", flush=True)
@@ -514,12 +517,10 @@ class MainWindow(QtWidgets.QMainWindow):
             
             if self._vtk_widget is not None:
                 print(f"[DEBUG] About to render from _display_polydata", flush=True)
-                # On macOS, just update the widget - no explicit Render() call
+                # On macOS, call Render() with a delay to ensure window is ready
                 if sys.platform == "darwin":
-                    print(f"[DEBUG] Updating widget on macOS (no Render())", flush=True)
-                    self._vtk_widget.update()
-                    self.activateWindow()
-                    self.raise_()
+                    print(f"[DEBUG] Scheduling delayed render on macOS (500ms)", flush=True)
+                    QtCore.QTimer.singleShot(500, self._deferred_render)
                 else:
                     self._vtk_widget.GetRenderWindow().Render()
                     print(f"[DEBUG] Render() completed in _display_polydata", flush=True)
