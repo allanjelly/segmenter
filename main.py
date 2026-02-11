@@ -224,6 +224,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 print(f"[DEBUG] SetOffScreenRendering done", flush=True)
                 render_window.SetMultiSamples(0)
                 print(f"[DEBUG] SetMultiSamples done", flush=True)
+            
+            print(f"[DEBUG] Calling vtk_widget.Initialize()", flush=True)
+            self._vtk_widget.Initialize()
+            print(f"[DEBUG] Initialize() completed", flush=True)
+            
+            # On macOS, add renderer AFTER Initialize
+            if sys.platform == "darwin":
+                print(f"[DEBUG] Adding renderer after Initialize on macOS", flush=True)
                 render_window.AddRenderer(self._renderer)
                 print(f"[DEBUG] AddRenderer done", flush=True)
                 # Ensure the render window is visible
@@ -234,9 +242,6 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._vtk_widget.show()
                     print(f"[DEBUG] Called show() on widget", flush=True)
             
-            print(f"[DEBUG] Calling vtk_widget.Initialize()", flush=True)
-            self._vtk_widget.Initialize()
-            print(f"[DEBUG] Initialize() completed", flush=True)
             self._append_message("VTK initialized")
             
             print(f"[DEBUG] Getting interactor", flush=True)
@@ -286,6 +291,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self._append_error(traceback.format_exc())
         
         print(f"[DEBUG] About to return from _initialize_vtk", flush=True)
+        
+        # Critical test: Schedule a simple timer to see if Qt event loop works at all
+        if sys.platform == "darwin":
+            print(f"[DEBUG] Scheduling test timer immediately after return", flush=True)
+            QtCore.QTimer.singleShot(10, self._test_event_loop)
+            print(f"[DEBUG] Test timer scheduled", flush=True)
+    
+    def _test_event_loop(self) -> None:
+        """Test if Qt event loop is running"""
+        print(f"[DEBUG] *** TEST TIMER FIRED - EVENT LOOP IS WORKING! ***", flush=True)
+        self._append_message("Event loop test passed")
     
     def _deferred_load_mesh_callback(self) -> None:
         """Timer callback for deferred mesh loading on macOS"""
