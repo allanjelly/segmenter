@@ -200,6 +200,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 print(f"[DEBUG] vtk_widget is None, returning", flush=True)
                 return
             
+            # On macOS, use a multi-step initialization to keep event loop alive
+            if sys.platform == "darwin":
+                print(f"[DEBUG] Starting multi-step macOS initialization", flush=True)
+                self._macos_init_step_1()
+                return
+            
             # On macOS, ensure the widget and window are fully laid out
             if sys.platform == "darwin":
                 print(f"[DEBUG] Ensuring widget is ready on macOS", flush=True)
@@ -302,6 +308,62 @@ class MainWindow(QtWidgets.QMainWindow):
         """Test if Qt event loop is running"""
         print(f"[DEBUG] *** TEST TIMER FIRED - EVENT LOOP IS WORKING! ***", flush=True)
         self._append_message("Event loop test passed")
+    
+    def _macos_init_step_1(self) -> None:
+        """Step 1: Setup widget and get render window"""
+        print(f"[DEBUG] macOS init step 1", flush=True)
+        self._append_message("Initializing VTK (step 1)...")
+        self._vtk_widget.setVisible(True)
+        self._vtk_widget.setFocus()
+        self.centralWidget().updateGeometry()
+        print(f"[DEBUG] Widget size: {self._vtk_widget.width()}x{self._vtk_widget.height()}", flush=True)
+        
+        render_window = self._vtk_widget.GetRenderWindow()
+        render_window.SetOffScreenRendering(0)
+        render_window.SetMultiSamples(0)
+        print(f"[DEBUG] Render window configured, scheduling step 2", flush=True)
+        QtCore.QTimer.singleShot(50, self._macos_init_step_2)
+    
+    def _macos_init_step_2(self) -> None:
+        """Step 2: Initialize VTK widget"""
+        print(f"[DEBUG] macOS init step 2 - calling Initialize()", flush=True)
+        self._append_message("Initializing VTK (step 2)...")
+        self._vtk_widget.Initialize()
+        print(f"[DEBUG] Initialize() done, scheduling step 3", flush=True)
+        QtCore.QTimer.singleShot(50, self._macos_init_step_3)
+    
+    def _macos_init_step_3(self) -> None:
+        """Step 3: Add renderer and setup interactor"""
+        print(f"[DEBUG] macOS init step 3", flush=True)
+        self._append_message("Initializing VTK (step 3)...")
+        render_window = self._vtk_widget.GetRenderWindow()
+        render_window.AddRenderer(self._renderer)
+        
+        interactor = render_window.GetInteractor()
+        if interactor is not None:
+            interactor.SetInteractorStyle(vtkInteractorStyleTrackballCamera())
+            interactor.AddObserver("LeftButtonPressEvent", self._on_left_button_press)
+        
+        print(f"[DEBUG] macOS init step 3 done, scheduling step 4", flush=True)
+        QtCore.QTimer.singleShot(50, self._macos_init_step_4)
+    
+    def _macos_init_step_4(self) -> None:
+        """Step 4: Load mesh if pending"""
+        print(f"[DEBUG] macOS init step 4 - final step", flush=True)
+        self._append_message("VTK initialized")
+        self._append_message("Renderer ready")
+        
+        if self._pending_file:
+            file_path = self._pending_file
+            self._pending_file = None
+            print(f"[DEBUG] Loading pending mesh: {file_path}", flush=True)
+            self._append_message(f"Loading mesh: {Path(file_path).name}")
+            QtCore.QTimer.singleShot(50, lambda: self._deferred_load_mesh(file_path))
+        else:
+            print(f"[DEBUG] No pending file", flush=True)
+            self._append_message("Ready")
+        
+        print(f"[DEBUG] macOS initialization complete", flush=True)
     
     def _deferred_load_mesh_callback(self) -> None:
         """Timer callback for deferred mesh loading on macOS"""
