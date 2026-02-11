@@ -187,10 +187,23 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._vtk_widget is not None:
             if sys.platform == "darwin":
                 print(f"[DEBUG] Scheduling VTK init for macOS (200ms delay)", flush=True)
-                QtCore.QTimer.singleShot(200, self._initialize_vtk)
+                QtCore.QTimer.singleShot(200, self._on_vtk_init_wrapper)
             else:
                 print(f"[DEBUG] Scheduling VTK init immediately", flush=True)
                 QtCore.QTimer.singleShot(0, self._initialize_vtk)
+    
+    def _on_vtk_init_wrapper(self) -> None:
+        """Wrapper to add debug output after _initialize_vtk completes on macOS"""
+        print(f"[DEBUG] _on_vtk_init_wrapper called", flush=True)
+        self._initialize_vtk()
+        print(f"[DEBUG] _on_vtk_init_wrapper: _initialize_vtk returned", flush=True)
+        # Schedule a check to ensure we're still responsive
+        QtCore.QTimer.singleShot(100, self._post_init_check)
+        print(f"[DEBUG] _on_vtk_init_wrapper: scheduled post-init check", flush=True)
+    
+    def _post_init_check(self) -> None:
+        print(f"[DEBUG] _post_init_check called - app is responsive!", flush=True)
+        self._append_message("Application ready")
 
     def _initialize_vtk(self) -> None:
         print(f"[DEBUG] _initialize_vtk called", flush=True)
@@ -251,6 +264,12 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 print(f"[DEBUG] No pending file to load", flush=True)
             print(f"[DEBUG] _initialize_vtk completed successfully", flush=True)
+            
+            # On macOS, force event processing to update UI
+            if sys.platform == "darwin":
+                print(f"[DEBUG] Processing Qt events on macOS", flush=True)
+                QtWidgets.QApplication.processEvents()
+                print(f"[DEBUG] Events processed", flush=True)
         except Exception as e:
             print(f"[DEBUG] Exception in _initialize_vtk: {str(e)}", flush=True)
             self._append_error(f"VTK initialization error: {str(e)}")
