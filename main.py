@@ -216,6 +216,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 print(f"[DEBUG] SetMultiSamples done", flush=True)
                 render_window.AddRenderer(self._renderer)
                 print(f"[DEBUG] AddRenderer done", flush=True)
+                # Ensure the render window is visible
+                print(f"[DEBUG] Checking widget visibility: {self._vtk_widget.isVisible()}", flush=True)
+                print(f"[DEBUG] Widget size: {self._vtk_widget.width()}x{self._vtk_widget.height()}", flush=True)
+                if not self._vtk_widget.isVisible():
+                    print(f"[DEBUG] WARNING: VTK widget not visible!", flush=True)
+                    self._vtk_widget.show()
+                    print(f"[DEBUG] Called show() on widget", flush=True)
             
             print(f"[DEBUG] Calling vtk_widget.Initialize()", flush=True)
             self._vtk_widget.Initialize()
@@ -238,6 +245,14 @@ class MainWindow(QtWidgets.QMainWindow):
             print(f"[DEBUG] Calling render_window.Render()", flush=True)
             render_window.Render()
             print(f"[DEBUG] Render() completed", flush=True)
+            
+            # On macOS, explicitly update and show the widget
+            if sys.platform == "darwin":
+                print(f"[DEBUG] Updating VTK widget on macOS", flush=True)
+                self._vtk_widget.update()
+                self._vtk_widget.repaint()
+                print(f"[DEBUG] Widget update/repaint done", flush=True)
+            
             self._append_message("Renderer ready")
             
             print(f"[DEBUG] Checking pending file: {self._pending_file}", flush=True)
