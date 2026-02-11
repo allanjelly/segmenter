@@ -346,11 +346,8 @@ class MainWindow(QtWidgets.QMainWindow):
         interactor = render_window.GetInteractor()
         print(f"[DEBUG] Got interactor: {interactor is not None}", flush=True)
         if interactor is not None:
-            print(f"[DEBUG] Calling interactor.Initialize()", flush=True)
-            # Initialize the interactor - this sets up the OpenGL context
-            interactor.Initialize()
-            print(f"[DEBUG] Interactor initialized", flush=True)
-            
+            # DON'T call interactor.Initialize() - it blocks the event loop on macOS!
+            # QVTKRenderWindowInteractor handles initialization automatically
             print(f"[DEBUG] Setting interactor style", flush=True)
             interactor.SetInteractorStyle(vtkInteractorStyleTrackballCamera())
             print(f"[DEBUG] Adding observer", flush=True)
