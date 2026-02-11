@@ -193,23 +193,33 @@ class MainWindow(QtWidgets.QMainWindow):
                 QtCore.QTimer.singleShot(0, self._initialize_vtk)
 
     def _initialize_vtk(self) -> None:
+        print(f"[DEBUG] _initialize_vtk called", flush=True)
         try:
             if self._vtk_widget is None:
+                print(f"[DEBUG] vtk_widget is None, returning", flush=True)
                 return
             
             self._append_message("Initializing VTK...")
+            print(f"[DEBUG] Getting render window", flush=True)
             
             # Get render window before Initialize to set properties
             render_window = self._vtk_widget.GetRenderWindow()
+            print(f"[DEBUG] Got render window", flush=True)
             
             # On macOS, set up renderer now (deferred from __init__)
             if sys.platform == "darwin":
+                print(f"[DEBUG] Setting up macOS renderer...", flush=True)
                 self._append_message("Setting up macOS renderer...")
                 render_window.SetOffScreenRendering(0)
+                print(f"[DEBUG] SetOffScreenRendering done", flush=True)
                 render_window.SetMultiSamples(0)
+                print(f"[DEBUG] SetMultiSamples done", flush=True)
                 render_window.AddRenderer(self._renderer)
+                print(f"[DEBUG] AddRenderer done", flush=True)
             
+            print(f"[DEBUG] Calling vtk_widget.Initialize()", flush=True)
             self._vtk_widget.Initialize()
+            print(f"[DEBUG] Initialize() completed", flush=True)
             self._append_message("VTK initialized")
             
             interactor = render_window.GetInteractor()
