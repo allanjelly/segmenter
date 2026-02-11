@@ -1,5 +1,6 @@
 import os
 import sys
+import traceback
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -168,28 +169,51 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def showEvent(self, event: QtCore.QEvent) -> None:
         super().showEvent(event)
-        if self._vtk_widget is not None:
-            QtCore.QTimer.singleShot(0, self._initialize_vtk)
         if self._initial_file:
-            self._append_message(f"Initial file queued: {self._initial_file}")
             self._pending_file = self._initial_file
+        # Delay VTK initialization to ensure window is fully visible on macOS
+        if self._vtk_widget is not None:
+            if sys.platform == "darwin":
+                QtCore.QTimer.singleShot(200, self._initialize_vtk)
+            else:
+                QtCore.QTimer.singleShot(0, self._initialize_vtk)
 
     def _initialize_vtk(self) -> None:
-        if self._vtk_widget is not None:
+        try:
+            if self._vtk_widget is None:
+                return
+                
+            self._append_message("Initializing VTK...")
+            
+            # Get render window before Initialize to set properties
+            render_window = self._vtk_widget.GetRenderWindow()
+            
+            # Critical for macOS: disable off-screen rendering
+            if sys.platform == "darwin":
+                render_window.SetOffScreenRendering(0)
+            
             self._vtk_widget.Initialize()
-            interactor = self._vtk_widget.GetRenderWindow().GetInteractor()
+            self._append_message("VTK initialized")
+            
+            interactor = render_window.GetInteractor()
             if interactor is not None:
                 interactor.SetInteractorStyle(vtkInteractorStyleTrackballCamera())
                 interactor.AddObserver(
                     "LeftButtonPressEvent",
                     self._on_left_button_press,
                 )
-            self._vtk_widget.GetRenderWindow().Render()
-        if self._pending_file:
-            file_path = self._pending_file
-            self._pending_file = None
-            # Delay loading slightly to ensure UI is fully initialized
-            QtCore.QTimer.singleShot(100, lambda: self.load_mesh(file_path))
+            
+            render_window.Render()
+            self._append_message("Renderer ready")
+            
+            if self._pending_file:
+                file_path = self._pending_file
+                self._pending_file = None
+                self._append_message(f"Loading mesh: {Path(file_path).name}")
+                self.load_mesh(file_path)
+        except Exception as e:
+            self._append_error(f"VTK initialization error: {str(e)}")
+            self._append_error(traceback.format_exc())
 
     def load_mesh(self, file_path: str) -> None:
         try:
@@ -262,25 +286,32 @@ class MainWindow(QtWidgets.QMainWindow):
         return polydata
 
     def _display_polydata(self, polydata) -> None:
-        mapper = vtkPolyDataMapper()
-        mapper.SetInputData(polydata)
-        mapper.SetScalarModeToUsePointData()
-        mapper.SelectColorArray("SegmentId")
-        mapper.SetLookupTable(self._segment_lut)
-        mapper.SetScalarRange(0, 9)
-        mapper.SetScalarVisibility(True)
+        try:
+            mapper = vtkPolyDataMapper()
+            mapper.SetInputData(polydata)
+            mapper.SetScalarModeToUsePointData()
+            mapper.SelectColorArray("SegmentId")
+            mapper.SetLookupTable(self._segment_lut)
+            mapper.SetScalarRange(0, 9)
+            mapper.SetScalarVisibility(True)
 
-        actor = vtkActor()
-        actor.SetMapper(mapper)
+            actor = vtkActor()
+            actor.SetMapper(mapper)
 
-        if self._mesh_actor is not None:
-            self._renderer.RemoveActor(self._mesh_actor)
+            if self._mesh_actor is not None:
+                self._renderer.RemoveActor(self._mesh_actor)
 
-        self._mesh_actor = actor
-        self._mesh_mapper = mapper
-        self._renderer.AddActor(actor)
-        self._renderer.ResetCamera()
-        self._vtk_widget.GetRenderWindow().Render()
+            self._mesh_actor = actor
+            self._mesh_mapper = mapper
+            self._renderer.AddActor(actor)
+            self._renderer.ResetCamera()
+            
+            if self._vtk_widget is not None:
+                self._vtk_widget.GetRenderWindow().Render()
+                self._append_message("Mesh displayed")
+        except Exception as e:
+            self._append_error(f"Display error: {str(e)}")
+            self._append_error(traceback.format_exc())
 
     def _display_overlay_polydata(self, polydata) -> None:
         mapper = vtkPolyDataMapper()
