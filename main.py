@@ -187,23 +187,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._vtk_widget is not None:
             if sys.platform == "darwin":
                 print(f"[DEBUG] Scheduling VTK init for macOS (200ms delay)", flush=True)
-                QtCore.QTimer.singleShot(200, self._on_vtk_init_wrapper)
+                QtCore.QTimer.singleShot(200, self._initialize_vtk)
             else:
                 print(f"[DEBUG] Scheduling VTK init immediately", flush=True)
                 QtCore.QTimer.singleShot(0, self._initialize_vtk)
-    
-    def _on_vtk_init_wrapper(self) -> None:
-        """Wrapper to add debug output after _initialize_vtk completes on macOS"""
-        print(f"[DEBUG] _on_vtk_init_wrapper called", flush=True)
-        self._initialize_vtk()
-        print(f"[DEBUG] _on_vtk_init_wrapper: _initialize_vtk returned", flush=True)
-        # Schedule a check to ensure we're still responsive
-        QtCore.QTimer.singleShot(100, self._post_init_check)
-        print(f"[DEBUG] _on_vtk_init_wrapper: scheduled post-init check", flush=True)
-    
-    def _post_init_check(self) -> None:
-        print(f"[DEBUG] _post_init_check called - app is responsive!", flush=True)
-        self._append_message("Application ready")
 
     def _initialize_vtk(self) -> None:
         print(f"[DEBUG] _initialize_vtk called", flush=True)
@@ -259,8 +246,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._pending_file = None
                 print(f"[DEBUG] About to load mesh: {file_path}", flush=True)
                 self._append_message(f"Loading mesh: {Path(file_path).name}")
-                self.load_mesh(file_path)
-                print(f"[DEBUG] load_mesh() returned", flush=True)
+                # On macOS, defer mesh loading to avoid blocking
+                if sys.platform == "darwin":
+                    print(f"[DEBUG] Scheduling deferred mesh load on macOS", flush=True)
+                    QtCore.QTimer.singleShot(50, lambda: self._deferred_load_mesh(file_path))
+                else:
+                    self.load_mesh(file_path)
+                    print(f"[DEBUG] load_mesh() returned", flush=True)
             else:
                 print(f"[DEBUG] No pending file to load", flush=True)
             print(f"[DEBUG] _initialize_vtk completed successfully", flush=True)
@@ -268,6 +260,13 @@ class MainWindow(QtWidgets.QMainWindow):
             print(f"[DEBUG] Exception in _initialize_vtk: {str(e)}", flush=True)
             self._append_error(f"VTK initialization error: {str(e)}")
             self._append_error(traceback.format_exc())
+    
+    def _deferred_load_mesh(self, file_path: str) -> None:
+        """Load mesh in a deferred callback to keep event loop responsive on macOS"""
+        print(f"[DEBUG] _deferred_load_mesh called for: {file_path}", flush=True)
+        self.load_mesh(file_path)
+        print(f"[DEBUG] _deferred_load_mesh completed", flush=True)
+        self._append_message("Application ready")
 
     def load_mesh(self, file_path: str) -> None:
         print(f"[DEBUG] load_mesh called: {file_path}", flush=True)
