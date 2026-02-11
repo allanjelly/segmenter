@@ -396,12 +396,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._vtk_widget is not None:
             self._vtk_widget.GetRenderWindow().Render()
             print(f"[DEBUG] Render() completed in _deferred_render", flush=True)
-            # Force the widget to update and show on macOS
+            # Schedule asynchronous update (avoid blocking repaint/show calls)
             self._vtk_widget.update()
-            self._vtk_widget.repaint()
-            self._vtk_widget.show()
-            self._vtk_widget.setFocus()
-            print(f"[DEBUG] Widget update/show completed", flush=True)
+            # Bring the main window to front and activate it
+            self.activateWindow()
+            self.raise_()
+            print(f"[DEBUG] Widget update scheduled, window activated", flush=True)
 
     def load_mesh(self, file_path: str) -> None:
         print(f"[DEBUG] load_mesh called: {file_path}", flush=True)
