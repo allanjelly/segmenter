@@ -1412,6 +1412,11 @@ def main() -> None:
     os_kind = detect_os()
     if os_kind == "wsl":
         os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+    elif os_kind == "mac":
+        # Critical macOS settings for VTK/Qt integration
+        os.environ.setdefault("QT_MAC_WANTS_LAYER", "1")
+        # Ensure proper OpenGL context
+        os.environ.setdefault("QSG_RENDER_LOOP", "basic")
 
     input_file = None
     for arg in sys.argv[1:]:
