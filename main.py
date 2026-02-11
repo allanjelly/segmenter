@@ -17,6 +17,7 @@ from vtkmodules.vtkRenderingCore import (
     vtkCellPicker,
     vtkPolyDataMapper,
     vtkRenderer,
+    vtkRenderWindow,
 )
 
 from geodesics import (
@@ -92,7 +93,11 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self._vtk_widget, stretch=1)
         self.setCentralWidget(central)
 
-        self._vtk_widget.GetRenderWindow().AddRenderer(self._renderer)
+        render_window = self._vtk_widget.GetRenderWindow()
+        # On macOS, ensure proper rendering context
+        if sys.platform == "darwin":
+            render_window.SetMultiSamples(0)
+        render_window.AddRenderer(self._renderer)
         self._setup_shortcuts()
         self.statusBar().showMessage("")
 
@@ -166,6 +171,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._vtk_widget is not None:
             QtCore.QTimer.singleShot(0, self._initialize_vtk)
         if self._initial_file:
+            self._append_message(f"Initial file queued: {self._initial_file}")
             self._pending_file = self._initial_file
 
     def _initialize_vtk(self) -> None:
@@ -182,28 +188,39 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._pending_file:
             file_path = self._pending_file
             self._pending_file = None
-            self.load_mesh(file_path)
+            # Delay loading slightly to ensure UI is fully initialized
+            QtCore.QTimer.singleShot(100, lambda: self.load_mesh(file_path))
 
     def load_mesh(self, file_path: str) -> None:
-        polydata = self._read_vtk_polydata(Path(file_path))
-        if polydata is None:
-            QtWidgets.QMessageBox.warning(
+        try:
+            self._append_message(f"Loading mesh from: {file_path}")
+            polydata = self._read_vtk_polydata(Path(file_path))
+            if polydata is None:
+                self._append_error("Failed to read VTK polydata - file may be corrupt or empty")
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Load Failed",
+                    "Failed to read VTK polydata.",
+                )
+                return
+
+            self._polydata = polydata
+            self._mesh_file_path = file_path
+            self._point_locator = vtkPointLocator()
+            self._point_locator.SetDataSet(polydata)
+            self._point_locator.BuildLocator()
+            self._geo_locator = build_point_locator(polydata)
+
+            self._display_polydata(polydata)
+            self._update_mesh_info(polydata, file_path)
+            self._append_message(f"Mesh loaded: {Path(file_path).name}")
+        except Exception as e:
+            self._append_error(f"Error loading mesh: {str(e)}")
+            QtWidgets.QMessageBox.critical(
                 self,
-                "Load Failed",
-                "Failed to read VTK polydata.",
+                "Load Error",
+                f"Error loading mesh: {str(e)}",
             )
-            return
-
-        self._polydata = polydata
-        self._mesh_file_path = file_path
-        self._point_locator = vtkPointLocator()
-        self._point_locator.SetDataSet(polydata)
-        self._point_locator.BuildLocator()
-        self._geo_locator = build_point_locator(polydata)
-
-        self._display_polydata(polydata)
-        self._update_mesh_info(polydata, file_path)
-        self._append_message(f"Mesh loaded: {Path(file_path).name}")
 
     def _select_overlay_mesh(self) -> None:
         options = QtWidgets.QFileDialog.Options()
@@ -388,6 +405,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def _append_message(self, message: str) -> None:
         if self._message_box is not None and message:
             self._message_box.appendPlainText(message)
+
+    def _append_error(self, message: str) -> None:
+        if self._error_box is not None and message:
+            self._error_box.appendPlainText(message)
 
     def _set_error_message(self, message: str) -> None:
         if self._error_box is not None:
@@ -1173,9 +1194,23 @@ def main() -> None:
         break
 
     app = QtWidgets.QApplication(sys.argv)
+    
+    # On macOS, we need to create the window first before showing file dialog
+    # to ensure proper Qt event loop initialization
     if input_file is None:
+        if os_kind == "mac":
+            # Create a temporary window to initialize Qt properly on Mac
+            temp_window = QtWidgets.QWidget()
+            temp_window.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.CustomizeWindowHint)
+            temp_window.resize(0, 0)
+            temp_window.show()
+            temp_window.hide()
+            app.processEvents()
+        
         options = QtWidgets.QFileDialog.Options()
-        options |= QtWidgets.QFileDialog.DontUseNativeDialog
+        # Use native dialog on Mac for better integration
+        if os_kind != "mac":
+            options |= QtWidgets.QFileDialog.DontUseNativeDialog
         input_file, _ = QtWidgets.QFileDialog.getOpenFileName(
             None,
             "Open VTK Mesh",
