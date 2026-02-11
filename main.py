@@ -346,6 +346,11 @@ class MainWindow(QtWidgets.QMainWindow):
         interactor = render_window.GetInteractor()
         print(f"[DEBUG] Got interactor: {interactor is not None}", flush=True)
         if interactor is not None:
+            print(f"[DEBUG] Calling interactor.Initialize()", flush=True)
+            # Initialize the interactor - this sets up the OpenGL context
+            interactor.Initialize()
+            print(f"[DEBUG] Interactor initialized", flush=True)
+            
             print(f"[DEBUG] Setting interactor style", flush=True)
             interactor.SetInteractorStyle(vtkInteractorStyleTrackballCamera())
             print(f"[DEBUG] Adding observer", flush=True)
@@ -395,11 +400,24 @@ class MainWindow(QtWidgets.QMainWindow):
         print(f"[DEBUG] _deferred_render called (delayed init complete)", flush=True)
         if self._vtk_widget is not None:
             try:
+                # Ensure widget is visible and has valid size
+                if not self._vtk_widget.isVisible():
+                    print(f"[DEBUG] WARNING: Widget not visible, calling show()", flush=True)
+                    self._vtk_widget.show()
+                
+                print(f"[DEBUG] Widget geometry: {self._vtk_widget.width()}x{self._vtk_widget.height()}", flush=True)
+                print(f"[DEBUG] Widget visible: {self._vtk_widget.isVisible()}", flush=True)
+                
                 # Now that the window has been visible for 500ms, try calling Render()
                 # The event loop should be stable and the OpenGL context ready
                 print(f"[DEBUG] Calling Render() with stable event loop", flush=True)
                 self._vtk_widget.GetRenderWindow().Render()
                 print(f"[DEBUG] *** RENDER COMPLETED SUCCESSFULLY! ***", flush=True)
+                
+                # Force widget to update its display
+                self._vtk_widget.update()
+                print(f"[DEBUG] Widget update() called", flush=True)
+                
                 self.activateWindow()
                 self.raise_()
             except Exception as e:
