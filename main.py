@@ -389,6 +389,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.load_mesh(file_path)
         print(f"[DEBUG] _deferred_load_mesh completed", flush=True)
         self._append_message("Application ready")
+    
+    def _deferred_render(self) -> None:
+        """Deferred render call for macOS to keep event loop responsive"""
+        print(f"[DEBUG] _deferred_render called", flush=True)
+        if self._vtk_widget is not None:
+            self._vtk_widget.GetRenderWindow().Render()
+            print(f"[DEBUG] Render() completed in _deferred_render", flush=True)
 
     def load_mesh(self, file_path: str) -> None:
         print(f"[DEBUG] load_mesh called: {file_path}", flush=True)
@@ -501,8 +508,13 @@ class MainWindow(QtWidgets.QMainWindow):
             
             if self._vtk_widget is not None:
                 print(f"[DEBUG] About to call Render() from _display_polydata", flush=True)
-                self._vtk_widget.GetRenderWindow().Render()
-                print(f"[DEBUG] Render() completed in _display_polydata", flush=True)
+                # On macOS, defer the render call to keep event loop responsive
+                if sys.platform == "darwin":
+                    print(f"[DEBUG] Scheduling deferred render on macOS", flush=True)
+                    QtCore.QTimer.singleShot(0, self._deferred_render)
+                else:
+                    self._vtk_widget.GetRenderWindow().Render()
+                    print(f"[DEBUG] Render() completed in _display_polydata", flush=True)
                 self._append_message("Mesh displayed")
         except Exception as e:
             print(f"[DEBUG] Exception in _display_polydata: {str(e)}", flush=True)
@@ -1413,10 +1425,10 @@ def main() -> None:
     if os_kind == "wsl":
         os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
     elif os_kind == "mac":
+        # Explicitly set the Qt platform plugin for macOS
+        os.environ.setdefault("QT_QPA_PLATFORM", "cocoa")
         # Critical macOS settings for VTK/Qt integration
         os.environ.setdefault("QT_MAC_WANTS_LAYER", "1")
-        # Ensure proper OpenGL context
-        os.environ.setdefault("QSG_RENDER_LOOP", "basic")
 
     input_file = None
     for arg in sys.argv[1:]:
