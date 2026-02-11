@@ -1,6 +1,13 @@
 import sys
-import vtk
 import os
+
+# On macOS, QVTKRenderWindowInteractor must use QOpenGLWidget as base class
+# because WA_PaintOnScreen (used by default QWidget base) is unsupported on Cocoa
+if sys.platform == "darwin":
+    import vtkmodules.qt
+    vtkmodules.qt.QVTKRWIBase = "QOpenGLWidget"
+
+import vtk
 from PySide6 import QtCore, QtWidgets
 from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
  
@@ -64,13 +71,13 @@ if __name__ == "__main__":
     if os_kind == "wsl":
         os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
     elif os_kind == "mac":
-        # Explicitly set the Qt platform plugin for macOS
-        os.environ.setdefault("QT_QPA_PLATFORM", "cocoa")
-        # Critical macOS settings for VTK/Qt integration
-        os.environ.setdefault("QT_MAC_WANTS_LAYER", "1")    
+        # Don't set QT_QPA_PLATFORM=cocoa - it's the default on macOS
+        # and explicitly setting it can interfere with initialization
+        # os.environ.setdefault("QT_QPA_PLATFORM", "cocoa")
+        #os.environ.setdefault("QT_MAC_WANTS_LAYER", "1")    
  
     app = QtWidgets.QApplication(sys.argv)
  
     window = MainWindow()
  
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
