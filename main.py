@@ -405,18 +405,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 print(f"[DEBUG] Widget geometry: {self._vtk_widget.width()}x{self._vtk_widget.height()}", flush=True)
                 print(f"[DEBUG] Widget visible: {self._vtk_widget.isVisible()}", flush=True)
                 
-                # Now that the window has been visible for 500ms, try calling Render()
-                # The event loop should be stable and the OpenGL context ready
-                print(f"[DEBUG] Calling Render() with stable event loop", flush=True)
-                self._vtk_widget.GetRenderWindow().Render()
-                print(f"[DEBUG] *** RENDER COMPLETED SUCCESSFULLY! ***", flush=True)
-                
-                # Force widget to update its display
+                # On macOS, DON'T call Render() - even with delays it breaks the event loop
+                # Instead, just mark the widget as dirty and let Qt's paint system handle it
+                print(f"[DEBUG] Scheduling repaint via update() - no direct Render() call", flush=True)
                 self._vtk_widget.update()
-                print(f"[DEBUG] Widget update() called", flush=True)
+                print(f"[DEBUG] Update scheduled", flush=True)
+                
+                # Schedule a test to verify event loop is still running after return
+                QtCore.QTimer.singleShot(100, lambda: print("[DEBUG] *** EVENT LOOP STILL ALIVE AFTER RENDER ***", flush=True))
                 
                 self.activateWindow()
                 self.raise_()
+                print(f"[DEBUG] _deferred_render completed, returning to event loop", flush=True)
             except Exception as e:
                 print(f"[DEBUG] Render exception: {e}", flush=True)
                 self._append_error(f"Render error: {e}")
