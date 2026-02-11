@@ -199,6 +199,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 print(f"[DEBUG] vtk_widget is None, returning", flush=True)
                 return
             
+            # On macOS, ensure the widget and window are fully laid out
+            if sys.platform == "darwin":
+                print(f"[DEBUG] Ensuring widget is ready on macOS", flush=True)
+                self._vtk_widget.setVisible(True)
+                self._vtk_widget.setFocus()
+                # Force geometry update
+                self.centralWidget().updateGeometry()
+                print(f"[DEBUG] Widget size: {self._vtk_widget.width()}x{self._vtk_widget.height()}", flush=True)
+                
             self._append_message("Initializing VTK...")
             print(f"[DEBUG] Getting render window", flush=True)
             
@@ -275,6 +284,8 @@ class MainWindow(QtWidgets.QMainWindow):
             print(f"[DEBUG] Exception in _initialize_vtk: {str(e)}", flush=True)
             self._append_error(f"VTK initialization error: {str(e)}")
             self._append_error(traceback.format_exc())
+        
+        print(f"[DEBUG] About to return from _initialize_vtk", flush=True)
     
     def _deferred_load_mesh(self, file_path: str) -> None:
         """Load mesh in a deferred callback to keep event loop responsive on macOS"""
