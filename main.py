@@ -394,9 +394,9 @@ class MainWindow(QtWidgets.QMainWindow):
         """Deferred render call for macOS to keep event loop responsive"""
         print(f"[DEBUG] _deferred_render called", flush=True)
         if self._vtk_widget is not None:
-            self._vtk_widget.GetRenderWindow().Render()
-            print(f"[DEBUG] Render() completed in _deferred_render", flush=True)
-            # Schedule asynchronous update (avoid blocking repaint/show calls)
+            # On macOS, DON'T call Render() - it blocks even in deferred callbacks
+            # Instead, just update the widget and let Qt's paint event trigger VTK rendering
+            print(f"[DEBUG] Scheduling widget update (no explicit Render())", flush=True)
             self._vtk_widget.update()
             # Bring the main window to front and activate it
             self.activateWindow()
@@ -513,11 +513,13 @@ class MainWindow(QtWidgets.QMainWindow):
             print(f"[DEBUG] Camera reset", flush=True)
             
             if self._vtk_widget is not None:
-                print(f"[DEBUG] About to call Render() from _display_polydata", flush=True)
-                # On macOS, defer the render call to keep event loop responsive
+                print(f"[DEBUG] About to render from _display_polydata", flush=True)
+                # On macOS, just update the widget - no explicit Render() call
                 if sys.platform == "darwin":
-                    print(f"[DEBUG] Scheduling deferred render on macOS", flush=True)
-                    QtCore.QTimer.singleShot(0, self._deferred_render)
+                    print(f"[DEBUG] Updating widget on macOS (no Render())", flush=True)
+                    self._vtk_widget.update()
+                    self.activateWindow()
+                    self.raise_()
                 else:
                     self._vtk_widget.GetRenderWindow().Render()
                     print(f"[DEBUG] Render() completed in _display_polydata", flush=True)
