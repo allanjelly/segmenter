@@ -100,13 +100,18 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self._vtk_widget, stretch=1)
         self.setCentralWidget(central)
 
-        # On macOS, defer all VTK operations until window is shown
-        if sys.platform != "darwin":
+        # On macOS, setup basic VTK structure synchronously BEFORE window is shown
+        # This follows VTK's requirement that interactor be initialized before event loop
+        if sys.platform == "darwin":
+            print(f"[DEBUG] macOS: Setting up VTK BEFORE showing window", flush=True)
+            render_window = self._vtk_widget.GetRenderWindow()
+            render_window.AddRenderer(self._renderer)
+            # Don't call Initialize() yet - that will happen when shown
+            print(f"[DEBUG] macOS: Renderer added to render window", flush=True)
+        else:
             print(f"[DEBUG] Setting up VTK render window (non-macOS)", flush=True)
             render_window = self._vtk_widget.GetRenderWindow()
             render_window.AddRenderer(self._renderer)
-        else:
-            print(f"[DEBUG] Deferring VTK setup for macOS", flush=True)
         
         print(f"[DEBUG] Setting up shortcuts", flush=True)
         self._setup_shortcuts()
@@ -184,14 +189,36 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._initial_file:
             print(f"[DEBUG] Initial file: {self._initial_file}", flush=True)
             self._pending_file = self._initial_file
-        # Delay VTK initialization to ensure window is fully visible on macOS
-        if self._vtk_widget is not None:
-            if sys.platform == "darwin":
-                print(f"[DEBUG] Scheduling VTK init for macOS (200ms delay)", flush=True)
-                QtCore.QTimer.singleShot(200, self._initialize_vtk)
-            else:
-                print(f"[DEBUG] Scheduling VTK init immediately", flush=True)
-                QtCore.QTimer.singleShot(0, self._initialize_vtk)
+        # On macOS, initialize VTK interactor now that window is visible but BEFORE event loop processes more events
+        if self._vtk_widget is not None and sys.platform == "darwin":
+            print(f"[DEBUG] Calling Start() on VTK widget for macOS", flush=True)
+            # Start() initializes the interactor properly for Qt integration
+            self._vtk_widget.Start()
+            print(f"[DEBUG] VTK widget Started", flush=True)
+            
+            # Setup interactor style and observers
+            interactor = self._vtk_widget.GetRenderWindow().GetInteractor()
+            if interactor:
+                print(f"[DEBUG] Setting up interactor", flush=True)
+                interactor.SetInteractorStyle(vtkInteractorStyleTrackballCamera())
+                interactor.AddObserver("LeftButtonPressEvent", self._on_left_button_press)
+                print(f"[DEBUG] Interactor configured", flush=True)
+        
+        # Now schedule mesh loading
+        if self._pending_file:
+            QtCore.QTimer.singleShot(100, self._load_pending_file)
+    
+    def _load_pending_file(self) -> None:
+        """Load the pending file after window is shown"""
+        print(f"[DEBUG] _load_pending_file called", flush=True)
+        if self._pending_file:
+            file_path = self._pending_file
+            self._pending_file = None
+            print(f"[DEBUG] Loading mesh: {file_path}", flush=True)
+            self._append_message(f"Loading mesh: {Path(file_path).name}")
+            self.load_mesh(file_path)
+            print(f"[DEBUG] Mesh loading completed", flush=True)
+            self._append_message("Application ready")
 
     def _initialize_vtk(self) -> None:
         print(f"[DEBUG] _initialize_vtk called", flush=True)
@@ -353,6 +380,11 @@ class MainWindow(QtWidgets.QMainWindow):
             print(f"[DEBUG] Adding observer", flush=True)
             interactor.AddObserver("LeftButtonPressEvent", self._on_left_button_press)
             print(f"[DEBUG] Observer added", flush=True)
+            
+            # Enable the interactor so it can process events and render
+            print(f"[DEBUG] Enabling interactor", flush=True)
+            interactor.Enable()
+            print(f"[DEBUG] Interactor enabled", flush=True)
         
         print(f"[DEBUG] macOS init step 3 done, scheduling step 4", flush=True)
         QtCore.QTimer.singleShot(50, self._macos_init_step_4)
@@ -405,9 +437,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 print(f"[DEBUG] Widget geometry: {self._vtk_widget.width()}x{self._vtk_widget.height()}", flush=True)
                 print(f"[DEBUG] Widget visible: {self._vtk_widget.isVisible()}", flush=True)
                 
-                # On macOS, DON'T call Render() - even with delays it breaks the event loop
-                # Instead, just mark the widget as dirty and let Qt's paint system handle it
-                print(f"[DEBUG] Scheduling repaint via update() - no direct Render() call", flush=True)
+                # Try calling Render() but immediately process events to unstick the loop
+                print(f"[DEBUG] Calling Render() with immediate processEvents", flush=True)
+                render_window = self._vtk_widget.GetRenderWindow()
+                render_window.Render()
+                print(f"[DEBUG] Render() returned, calling processEvents", flush=True)
+                QtWidgets.QApplication.processEvents()
+                print(f"[DEBUG] processEvents completed", flush=True)
+                
                 self._vtk_widget.update()
                 print(f"[DEBUG] Update scheduled", flush=True)
                 
@@ -532,10 +569,12 @@ class MainWindow(QtWidgets.QMainWindow):
             
             if self._vtk_widget is not None:
                 print(f"[DEBUG] About to render from _display_polydata", flush=True)
-                # On macOS, call Render() with a delay to ensure window is ready
+                # Now that interactor is properly initialized, we can render normally
                 if sys.platform == "darwin":
-                    print(f"[DEBUG] Scheduling delayed render on macOS (500ms)", flush=True)
-                    QtCore.QTimer.singleShot(500, self._deferred_render)
+                    print(f"[DEBUG] Rendering on macOS with processEvents", flush=True)
+                    self._vtk_widget.GetRenderWindow().Render()
+                    QtWidgets.QApplication.processEvents()  # Keep event loop responsive
+                    print(f"[DEBUG] Render completed", flush=True)
                 else:
                     self._vtk_widget.GetRenderWindow().Render()
                     print(f"[DEBUG] Render() completed in _display_polydata", flush=True)
