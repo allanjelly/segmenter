@@ -247,6 +247,14 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._on_left_button_press,
                 )
                 print(f"[DEBUG] Observer added", flush=True)
+                
+                # Critical for macOS: Disable VTK's own event loop
+                # The QVTKRenderWindowInteractor will manage events through Qt
+                if sys.platform == "darwin":
+                    print(f"[DEBUG] Configuring interactor for macOS", flush=True)
+                    # Don't let VTK interactor start its own event loop
+                    interactor.EnableRenderOff()
+                    print(f"[DEBUG] Interactor configured", flush=True)
             
             print(f"[DEBUG] Calling render_window.Render()", flush=True)
             render_window.Render()
@@ -264,12 +272,6 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 print(f"[DEBUG] No pending file to load", flush=True)
             print(f"[DEBUG] _initialize_vtk completed successfully", flush=True)
-            
-            # On macOS, force event processing to update UI
-            if sys.platform == "darwin":
-                print(f"[DEBUG] Processing Qt events on macOS", flush=True)
-                QtWidgets.QApplication.processEvents()
-                print(f"[DEBUG] Events processed", flush=True)
         except Exception as e:
             print(f"[DEBUG] Exception in _initialize_vtk: {str(e)}", flush=True)
             self._append_error(f"VTK initialization error: {str(e)}")
