@@ -1,6 +1,9 @@
 import os
 import sys
-import traceback
+# workaround for mac to make QT work with VTK
+if sys.platform == "darwin":
+    import vtkmodules.qt
+    vtkmodules.qt.QVTKRWIBase = "QOpenGLWidget"
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -18,7 +21,6 @@ from vtkmodules.vtkRenderingCore import (
     vtkCellPicker,
     vtkPolyDataMapper,
     vtkRenderer,
-    vtkRenderWindow,
 )
 
 from geodesics import (
@@ -51,7 +53,6 @@ def detect_os() -> str:
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, initial_file: str | None = None) -> None:
         super().__init__()
-        print(f"[DEBUG] MainWindow.__init__ started, platform={sys.platform}", flush=True)
         self.setWindowTitle("Segmenter")
         self.resize(1200, 800)
         self._mesh_actor = None
@@ -81,18 +82,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._message_box = None
         self._error_box = None
         self._updating_steps = False
-        self._deferred_mesh_path = None  # For macOS deferred loading
 
-        print(f"[DEBUG] Creating central widget", flush=True)
         central = QtWidgets.QWidget(self)
         layout = QtWidgets.QHBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        print(f"[DEBUG] Building left panel", flush=True)
         self._left_panel = self._build_left_panel()
-        print(f"[DEBUG] Creating VTK widget", flush=True)
         self._vtk_widget = QVTKRenderWindowInteractor(central)
-        print(f"[DEBUG] VTK widget created", flush=True)
         self._vtk_widget.setFocusPolicy(QtCore.Qt.StrongFocus)
         self._vtk_widget.setFocus()
 
@@ -100,23 +96,9 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self._vtk_widget, stretch=1)
         self.setCentralWidget(central)
 
-        # On macOS, setup basic VTK structure synchronously BEFORE window is shown
-        # This follows VTK's requirement that interactor be initialized before event loop
-        if sys.platform == "darwin":
-            print(f"[DEBUG] macOS: Setting up VTK BEFORE showing window", flush=True)
-            render_window = self._vtk_widget.GetRenderWindow()
-            render_window.AddRenderer(self._renderer)
-            # Don't call Initialize() yet - that will happen when shown
-            print(f"[DEBUG] macOS: Renderer added to render window", flush=True)
-        else:
-            print(f"[DEBUG] Setting up VTK render window (non-macOS)", flush=True)
-            render_window = self._vtk_widget.GetRenderWindow()
-            render_window.AddRenderer(self._renderer)
-        
-        print(f"[DEBUG] Setting up shortcuts", flush=True)
+        self._vtk_widget.GetRenderWindow().AddRenderer(self._renderer)
         self._setup_shortcuts()
         self.statusBar().showMessage("")
-        print(f"[DEBUG] MainWindow.__init__ completed", flush=True)
 
     def _build_left_panel(self) -> QtWidgets.QWidget:
         panel = QtWidgets.QWidget(self)
@@ -184,322 +166,48 @@ class MainWindow(QtWidgets.QMainWindow):
         return panel
 
     def showEvent(self, event: QtCore.QEvent) -> None:
-        print(f"[DEBUG] showEvent called", flush=True)
         super().showEvent(event)
+        if self._vtk_widget is not None:
+            QtCore.QTimer.singleShot(0, self._initialize_vtk)
         if self._initial_file:
-            print(f"[DEBUG] Initial file: {self._initial_file}", flush=True)
             self._pending_file = self._initial_file
-        # On macOS, initialize VTK interactor now that window is visible but BEFORE event loop processes more events
-        if self._vtk_widget is not None and sys.platform == "darwin":
-            print(f"[DEBUG] Calling Start() on VTK widget for macOS", flush=True)
-            # Start() initializes the interactor properly for Qt integration
-            self._vtk_widget.Start()
-            print(f"[DEBUG] VTK widget Started", flush=True)
-            
-            # Setup interactor style and observers
-            interactor = self._vtk_widget.GetRenderWindow().GetInteractor()
-            if interactor:
-                print(f"[DEBUG] Setting up interactor", flush=True)
-                interactor.SetInteractorStyle(vtkInteractorStyleTrackballCamera())
-                interactor.AddObserver("LeftButtonPressEvent", self._on_left_button_press)
-                print(f"[DEBUG] Interactor configured", flush=True)
-        
-        # Now schedule mesh loading
-        if self._pending_file:
-            QtCore.QTimer.singleShot(100, self._load_pending_file)
-    
-    def _load_pending_file(self) -> None:
-        """Load the pending file after window is shown"""
-        print(f"[DEBUG] _load_pending_file called", flush=True)
-        if self._pending_file:
-            file_path = self._pending_file
-            self._pending_file = None
-            print(f"[DEBUG] Loading mesh: {file_path}", flush=True)
-            self._append_message(f"Loading mesh: {Path(file_path).name}")
-            self.load_mesh(file_path)
-            print(f"[DEBUG] Mesh loading completed", flush=True)
-            self._append_message("Application ready")
 
     def _initialize_vtk(self) -> None:
-        print(f"[DEBUG] _initialize_vtk called", flush=True)
-        try:
-            if self._vtk_widget is None:
-                print(f"[DEBUG] vtk_widget is None, returning", flush=True)
-                return
-            
-            # On macOS, use a multi-step initialization to keep event loop alive
-            if sys.platform == "darwin":
-                print(f"[DEBUG] Starting multi-step macOS initialization", flush=True)
-                self._macos_init_step_1()
-                return
-            
-            # On macOS, ensure the widget and window are fully laid out
-            if sys.platform == "darwin":
-                print(f"[DEBUG] Ensuring widget is ready on macOS", flush=True)
-                self._vtk_widget.setVisible(True)
-                self._vtk_widget.setFocus()
-                # Force geometry update
-                self.centralWidget().updateGeometry()
-                print(f"[DEBUG] Widget size: {self._vtk_widget.width()}x{self._vtk_widget.height()}", flush=True)
-                
-            self._append_message("Initializing VTK...")
-            print(f"[DEBUG] Getting render window", flush=True)
-            
-            # Get render window before Initialize to set properties
-            render_window = self._vtk_widget.GetRenderWindow()
-            print(f"[DEBUG] Got render window", flush=True)
-            
-            # On macOS, set up renderer now (deferred from __init__)
-            if sys.platform == "darwin":
-                print(f"[DEBUG] Setting up macOS renderer...", flush=True)
-                self._append_message("Setting up macOS renderer...")
-                render_window.SetOffScreenRendering(0)
-                print(f"[DEBUG] SetOffScreenRendering done", flush=True)
-                render_window.SetMultiSamples(0)
-                print(f"[DEBUG] SetMultiSamples done", flush=True)
-            
-            print(f"[DEBUG] Calling vtk_widget.Initialize()", flush=True)
+        if self._vtk_widget is not None:
             self._vtk_widget.Initialize()
-            print(f"[DEBUG] Initialize() completed", flush=True)
-            
-            # On macOS, add renderer AFTER Initialize
-            if sys.platform == "darwin":
-                print(f"[DEBUG] Adding renderer after Initialize on macOS", flush=True)
-                render_window.AddRenderer(self._renderer)
-                print(f"[DEBUG] AddRenderer done", flush=True)
-                # Ensure the render window is visible
-                print(f"[DEBUG] Checking widget visibility: {self._vtk_widget.isVisible()}", flush=True)
-                print(f"[DEBUG] Widget size: {self._vtk_widget.width()}x{self._vtk_widget.height()}", flush=True)
-                if not self._vtk_widget.isVisible():
-                    print(f"[DEBUG] WARNING: VTK widget not visible!", flush=True)
-                    self._vtk_widget.show()
-                    print(f"[DEBUG] Called show() on widget", flush=True)
-            
-            self._append_message("VTK initialized")
-            
-            print(f"[DEBUG] Getting interactor", flush=True)
-            interactor = render_window.GetInteractor()
-            print(f"[DEBUG] Got interactor: {interactor is not None}", flush=True)
+            interactor = self._vtk_widget.GetRenderWindow().GetInteractor()
             if interactor is not None:
-                print(f"[DEBUG] Setting interactor style", flush=True)
                 interactor.SetInteractorStyle(vtkInteractorStyleTrackballCamera())
-                print(f"[DEBUG] Adding observer", flush=True)
                 interactor.AddObserver(
                     "LeftButtonPressEvent",
                     self._on_left_button_press,
                 )
-                print(f"[DEBUG] Observer added", flush=True)
-            
-            print(f"[DEBUG] Calling render_window.Render()", flush=True)
-            # On macOS, skip the initial render to avoid blocking the event loop
-            # The first render will happen when the mesh is displayed
-            if sys.platform != "darwin":
-                render_window.Render()
-                print(f"[DEBUG] Render() completed", flush=True)
-            else:
-                print(f"[DEBUG] Skipping initial Render() on macOS", flush=True)
-            
-            self._append_message("Renderer ready")
-            
-            print(f"[DEBUG] Checking pending file: {self._pending_file}", flush=True)
-            if self._pending_file:
-                file_path = self._pending_file
-                self._pending_file = None
-                print(f"[DEBUG] About to load mesh: {file_path}", flush=True)
-                self._append_message(f"Loading mesh: {Path(file_path).name}")
-                # On macOS, defer mesh loading to avoid blocking
-                if sys.platform == "darwin":
-                    print(f"[DEBUG] Scheduling deferred mesh load on macOS", flush=True)
-                    self._deferred_mesh_path = file_path
-                    QtCore.QTimer.singleShot(50, self._deferred_load_mesh_callback)
-                else:
-                    self.load_mesh(file_path)
-                    print(f"[DEBUG] load_mesh() returned", flush=True)
-            else:
-                print(f"[DEBUG] No pending file to load", flush=True)
-            print(f"[DEBUG] _initialize_vtk completed successfully", flush=True)
-        except Exception as e:
-            print(f"[DEBUG] Exception in _initialize_vtk: {str(e)}", flush=True)
-            self._append_error(f"VTK initialization error: {str(e)}")
-            self._append_error(traceback.format_exc())
-        
-        print(f"[DEBUG] About to return from _initialize_vtk", flush=True)
-        
-        # Critical test: Schedule a simple timer to see if Qt event loop works at all
-        if sys.platform == "darwin":
-            print(f"[DEBUG] Scheduling test timer immediately after return", flush=True)
-            QtCore.QTimer.singleShot(10, self._test_event_loop)
-            print(f"[DEBUG] Test timer scheduled", flush=True)
-    
-    def _test_event_loop(self) -> None:
-        """Test if Qt event loop is running"""
-        print(f"[DEBUG] *** TEST TIMER FIRED - EVENT LOOP IS WORKING! ***", flush=True)
-        self._append_message("Event loop test passed")
-    
-    def _macos_init_step_1(self) -> None:
-        """Step 1: Setup widget and get render window"""
-        print(f"[DEBUG] macOS init step 1", flush=True)
-        self._append_message("Initializing VTK (step 1)...")
-        self._vtk_widget.setVisible(True)
-        self._vtk_widget.setFocus()
-        self.centralWidget().updateGeometry()
-        print(f"[DEBUG] Widget size: {self._vtk_widget.width()}x{self._vtk_widget.height()}", flush=True)
-        
-        render_window = self._vtk_widget.GetRenderWindow()
-        render_window.SetOffScreenRendering(0)
-        render_window.SetMultiSamples(0)
-        print(f"[DEBUG] Render window configured, scheduling step 2", flush=True)
-        QtCore.QTimer.singleShot(50, self._macos_init_step_2)
-    
-    def _macos_init_step_2(self) -> None:
-        """Step 2: Add renderer WITHOUT calling Initialize - let it auto-initialize"""
-        print(f"[DEBUG] macOS init step 2 - SKIP manual Initialize(), auto-init instead", flush=True)
-        self._append_message("Initializing VTK (step 2)...")
-        
-        # Don't call Initialize() manually on macOS - it breaks the event loop
-        # Instead, just set up the renderer and let QVTKRenderWindowInteractor auto-initialize
-        render_window = self._vtk_widget.GetRenderWindow()
-        render_window.AddRenderer(self._renderer)
-        print(f"[DEBUG] Renderer added, scheduling step 3", flush=True)
-        QtCore.QTimer.singleShot(50, self._macos_init_step_3)
-    
-    def _macos_init_step_3(self) -> None:
-        """Step 3: Setup interactor"""
-        print(f"[DEBUG] macOS init step 3 - setting up interactor", flush=True)
-        self._append_message("Initializing VTK (step 3)...")
-        render_window = self._vtk_widget.GetRenderWindow()
-        
-        # Get or create interactor
-        interactor = render_window.GetInteractor()
-        print(f"[DEBUG] Got interactor: {interactor is not None}", flush=True)
-        if interactor is not None:
-            # DON'T call interactor.Initialize() - it blocks the event loop on macOS!
-            # QVTKRenderWindowInteractor handles initialization automatically
-            print(f"[DEBUG] Setting interactor style", flush=True)
-            interactor.SetInteractorStyle(vtkInteractorStyleTrackballCamera())
-            print(f"[DEBUG] Adding observer", flush=True)
-            interactor.AddObserver("LeftButtonPressEvent", self._on_left_button_press)
-            print(f"[DEBUG] Observer added", flush=True)
-            
-            # Enable the interactor so it can process events and render
-            print(f"[DEBUG] Enabling interactor", flush=True)
-            interactor.Enable()
-            print(f"[DEBUG] Interactor enabled", flush=True)
-        
-        print(f"[DEBUG] macOS init step 3 done, scheduling step 4", flush=True)
-        QtCore.QTimer.singleShot(50, self._macos_init_step_4)
-    
-    def _macos_init_step_4(self) -> None:
-        """Step 4: Load mesh if pending"""
-        print(f"[DEBUG] macOS init step 4 - final step", flush=True)
-        self._append_message("VTK initialized")
-        self._append_message("Renderer ready")
-        
+            self._vtk_widget.GetRenderWindow().Render()
         if self._pending_file:
             file_path = self._pending_file
             self._pending_file = None
-            print(f"[DEBUG] Loading pending mesh: {file_path}", flush=True)
-            self._append_message(f"Loading mesh: {Path(file_path).name}")
-            QtCore.QTimer.singleShot(50, lambda: self._deferred_load_mesh(file_path))
-        else:
-            print(f"[DEBUG] No pending file", flush=True)
-            self._append_message("Ready")
-        
-        print(f"[DEBUG] macOS initialization complete", flush=True)
-    
-    def _deferred_load_mesh_callback(self) -> None:
-        """Timer callback for deferred mesh loading on macOS"""
-        print(f"[DEBUG] _deferred_load_mesh_callback fired!", flush=True)
-        if self._deferred_mesh_path:
-            file_path = self._deferred_mesh_path
-            self._deferred_mesh_path = None
-            self._deferred_load_mesh(file_path)
-        else:
-            print(f"[DEBUG] No deferred mesh path found", flush=True)
-    
-    def _deferred_load_mesh(self, file_path: str) -> None:
-        """Load mesh in a deferred callback to keep event loop responsive on macOS"""
-        print(f"[DEBUG] _deferred_load_mesh called for: {file_path}", flush=True)
-        self.load_mesh(file_path)
-        print(f"[DEBUG] _deferred_load_mesh completed", flush=True)
-        self._append_message("Application ready")
-    
-    def _deferred_render(self) -> None:
-        """Deferred render call for macOS - called after window is fully ready"""
-        print(f"[DEBUG] _deferred_render called (delayed init complete)", flush=True)
-        if self._vtk_widget is not None:
-            try:
-                # Ensure widget is visible and has valid size
-                if not self._vtk_widget.isVisible():
-                    print(f"[DEBUG] WARNING: Widget not visible, calling show()", flush=True)
-                    self._vtk_widget.show()
-                
-                print(f"[DEBUG] Widget geometry: {self._vtk_widget.width()}x{self._vtk_widget.height()}", flush=True)
-                print(f"[DEBUG] Widget visible: {self._vtk_widget.isVisible()}", flush=True)
-                
-                # Try calling Render() but immediately process events to unstick the loop
-                print(f"[DEBUG] Calling Render() with immediate processEvents", flush=True)
-                render_window = self._vtk_widget.GetRenderWindow()
-                render_window.Render()
-                print(f"[DEBUG] Render() returned, calling processEvents", flush=True)
-                QtWidgets.QApplication.processEvents()
-                print(f"[DEBUG] processEvents completed", flush=True)
-                
-                self._vtk_widget.update()
-                print(f"[DEBUG] Update scheduled", flush=True)
-                
-                # Schedule a test to verify event loop is still running after return
-                QtCore.QTimer.singleShot(100, lambda: print("[DEBUG] *** EVENT LOOP STILL ALIVE AFTER RENDER ***", flush=True))
-                
-                self.activateWindow()
-                self.raise_()
-                print(f"[DEBUG] _deferred_render completed, returning to event loop", flush=True)
-            except Exception as e:
-                print(f"[DEBUG] Render exception: {e}", flush=True)
-                self._append_error(f"Render error: {e}")
+            self.load_mesh(file_path)
 
     def load_mesh(self, file_path: str) -> None:
-        print(f"[DEBUG] load_mesh called: {file_path}", flush=True)
-        try:
-            self._append_message(f"Loading mesh from: {file_path}")
-            print(f"[DEBUG] About to read VTK polydata", flush=True)
-            polydata = self._read_vtk_polydata(Path(file_path))
-            print(f"[DEBUG] read_vtk_polydata returned: {polydata is not None}", flush=True)
-            if polydata is None:
-                self._append_error("Failed to read VTK polydata - file may be corrupt or empty")
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    "Load Failed",
-                    "Failed to read VTK polydata.",
-                )
-                return
-
-            print(f"[DEBUG] Setting polydata and building locators", flush=True)
-            self._polydata = polydata
-            self._mesh_file_path = file_path
-            self._point_locator = vtkPointLocator()
-            self._point_locator.SetDataSet(polydata)
-            print(f"[DEBUG] BuildLocator...", flush=True)
-            self._point_locator.BuildLocator()
-            print(f"[DEBUG] build_point_locator...", flush=True)
-            self._geo_locator = build_point_locator(polydata)
-            print(f"[DEBUG] Locators built", flush=True)
-
-            print(f"[DEBUG] Displaying polydata...", flush=True)
-            self._display_polydata(polydata)
-            print(f"[DEBUG] Polydata displayed", flush=True)
-            print(f"[DEBUG] Updating mesh info...", flush=True)
-            self._update_mesh_info(polydata, file_path)
-            print(f"[DEBUG] Mesh info updated", flush=True)
-            self._append_message(f"Mesh loaded: {Path(file_path).name}")
-            print(f"[DEBUG] load_mesh completed successfully", flush=True)
-        except Exception as e:
-            self._append_error(f"Error loading mesh: {str(e)}")
-            QtWidgets.QMessageBox.critical(
+        polydata = self._read_vtk_polydata(Path(file_path))
+        if polydata is None:
+            QtWidgets.QMessageBox.warning(
                 self,
-                "Load Error",
-                f"Error loading mesh: {str(e)}",
+                "Load Failed",
+                "Failed to read VTK polydata.",
             )
+            return
+
+        self._polydata = polydata
+        self._mesh_file_path = file_path
+        self._point_locator = vtkPointLocator()
+        self._point_locator.SetDataSet(polydata)
+        self._point_locator.BuildLocator()
+        self._geo_locator = build_point_locator(polydata)
+
+        self._display_polydata(polydata)
+        self._update_mesh_info(polydata, file_path)
+        self._append_message(f"Mesh loaded: {Path(file_path).name}")
 
     def _select_overlay_mesh(self) -> None:
         options = QtWidgets.QFileDialog.Options()
@@ -541,48 +249,25 @@ class MainWindow(QtWidgets.QMainWindow):
         return polydata
 
     def _display_polydata(self, polydata) -> None:
-        print(f"[DEBUG] _display_polydata called", flush=True)
-        try:
-            print(f"[DEBUG] Creating mapper and actor", flush=True)
-            mapper = vtkPolyDataMapper()
-            mapper.SetInputData(polydata)
-            mapper.SetScalarModeToUsePointData()
-            mapper.SelectColorArray("SegmentId")
-            mapper.SetLookupTable(self._segment_lut)
-            mapper.SetScalarRange(0, 9)
-            mapper.SetScalarVisibility(True)
+        mapper = vtkPolyDataMapper()
+        mapper.SetInputData(polydata)
+        mapper.SetScalarModeToUsePointData()
+        mapper.SelectColorArray("SegmentId")
+        mapper.SetLookupTable(self._segment_lut)
+        mapper.SetScalarRange(0, 9)
+        mapper.SetScalarVisibility(True)
 
-            actor = vtkActor()
-            actor.SetMapper(mapper)
+        actor = vtkActor()
+        actor.SetMapper(mapper)
 
-            if self._mesh_actor is not None:
-                print(f"[DEBUG] Removing old mesh actor", flush=True)
-                self._renderer.RemoveActor(self._mesh_actor)
+        if self._mesh_actor is not None:
+            self._renderer.RemoveActor(self._mesh_actor)
 
-            print(f"[DEBUG] Adding mesh actor to renderer", flush=True)
-            self._mesh_actor = actor
-            self._mesh_mapper = mapper
-            self._renderer.AddActor(actor)
-            print(f"[DEBUG] Resetting camera", flush=True)
-            self._renderer.ResetCamera()
-            print(f"[DEBUG] Camera reset", flush=True)
-            
-            if self._vtk_widget is not None:
-                print(f"[DEBUG] About to render from _display_polydata", flush=True)
-                # Now that interactor is properly initialized, we can render normally
-                if sys.platform == "darwin":
-                    print(f"[DEBUG] Rendering on macOS with processEvents", flush=True)
-                    self._vtk_widget.GetRenderWindow().Render()
-                    QtWidgets.QApplication.processEvents()  # Keep event loop responsive
-                    print(f"[DEBUG] Render completed", flush=True)
-                else:
-                    self._vtk_widget.GetRenderWindow().Render()
-                    print(f"[DEBUG] Render() completed in _display_polydata", flush=True)
-                self._append_message("Mesh displayed")
-        except Exception as e:
-            print(f"[DEBUG] Exception in _display_polydata: {str(e)}", flush=True)
-            self._append_error(f"Display error: {str(e)}")
-            self._append_error(traceback.format_exc())
+        self._mesh_actor = actor
+        self._mesh_mapper = mapper
+        self._renderer.AddActor(actor)
+        self._renderer.ResetCamera()
+        self._vtk_widget.GetRenderWindow().Render()
 
     def _display_overlay_polydata(self, polydata) -> None:
         mapper = vtkPolyDataMapper()
@@ -707,10 +392,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def _append_message(self, message: str) -> None:
         if self._message_box is not None and message:
             self._message_box.appendPlainText(message)
-
-    def _append_error(self, message: str) -> None:
-        if self._error_box is not None and message:
-            self._error_box.appendPlainText(message)
 
     def _set_error_message(self, message: str) -> None:
         if self._error_box is not None:
@@ -921,7 +602,6 @@ class MainWindow(QtWidgets.QMainWindow):
             ("AC", {"A", "C"}),
             ("BD", {"B", "D"}),
             ("CE", {"C", "E"}),
-            ("AF", {"A", "F"}),
             ("BH", {"B", "H"}),
             ("DI", {"D", "I"}),
             ("LAA1_LAA2_anterior", {"LAA1", "LAA2", "D", "F"}),
@@ -1005,14 +685,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 changed_geodesics.add("CE")
 
         if (
-            "A" in self._landmarks
-            and "F" in self._landmarks
-            and ({"A", "F"} & changed_landmarks or "AF" not in self._geodesic_lines)
-        ):
-            if self._update_simple_geodesic("AF", "A", "F", (0.7, 0.9, 0.3), 6.0):
-                changed_geodesics.add("AF")
-
-        if (
             "B" in self._landmarks
             and "H" in self._landmarks
             and ({"B", "H"} & changed_landmarks or "BH" not in self._geodesic_lines)
@@ -1052,6 +724,75 @@ class MainWindow(QtWidgets.QMainWindow):
                 plane_origin_key="D",
             )
             changed_geodesics.update(updated)
+            
+            # Step (a): Find LAA3 - closest point on LAA1_LAA2_posterior to point A
+            if (
+                "LAA1_LAA2_posterior" in self._geodesic_lines
+                and "A" in self._landmarks
+            ):
+                posterior_line = self._geodesic_lines["LAA1_LAA2_posterior"]
+                point_a = self._landmarks["A"]
+                
+                # Find closest point on the posterior geodesic to point A
+                closest_point = None
+                min_distance_sq = float("inf")
+                
+                points = posterior_line.GetPoints()
+                for i in range(points.GetNumberOfPoints()):
+                    point = points.GetPoint(i)
+                    dx = point[0] - point_a[0]
+                    dy = point[1] - point_a[1]
+                    dz = point[2] - point_a[2]
+                    dist_sq = dx * dx + dy * dy + dz * dz
+                    
+                    if dist_sq < min_distance_sq:
+                        min_distance_sq = dist_sq
+                        closest_point = point
+                
+                if closest_point is not None:
+                    # Store as LAA3 landmark
+                    self._landmarks["LAA3"] = closest_point
+                    self._update_landmark_actor("LAA3", closest_point)
+                    self._append_message(f"LAA3 auto-placed on LAA1_LAA2_posterior")
+            
+            # Step (b): Find LAA4 - closest point on LAA1_LAA2_anterior to point F
+            if (
+                "LAA1_LAA2_anterior" in self._geodesic_lines
+                and "F" in self._landmarks
+            ):
+                anterior_line = self._geodesic_lines["LAA1_LAA2_anterior"]
+                point_f = self._landmarks["F"]
+                
+                # Find closest point on the anterior geodesic to point F
+                closest_point = None
+                min_distance_sq = float("inf")
+                
+                points = anterior_line.GetPoints()
+                for i in range(points.GetNumberOfPoints()):
+                    point = points.GetPoint(i)
+                    dx = point[0] - point_f[0]
+                    dy = point[1] - point_f[1]
+                    dz = point[2] - point_f[2]
+                    dist_sq = dx * dx + dy * dy + dz * dz
+                    
+                    if dist_sq < min_distance_sq:
+                        min_distance_sq = dist_sq
+                        closest_point = point
+                
+                if closest_point is not None:
+                    # Store as LAA4 landmark
+                    self._landmarks["LAA4"] = closest_point
+                    self._update_landmark_actor("LAA4", closest_point)
+                    self._append_message(f"LAA4 auto-placed on LAA1_LAA2_anterior")
+            
+            # Step (c): Calculate geodesics A_LAA3 and F_LAA4
+            if "A" in self._landmarks and "LAA3" in self._landmarks:
+                if self._update_simple_geodesic("A_LAA3", "A", "LAA3", (1.0, 0.5, 0.0), 5.0):
+                    changed_geodesics.add("A_LAA3")
+            
+            if "F" in self._landmarks and "LAA4" in self._landmarks:
+                if self._update_simple_geodesic("F_LAA4", "F", "LAA4", (1.0, 0.5, 0.0), 5.0):
+                    changed_geodesics.add("F_LAA4")
 
 # A1=A2
         if (
@@ -1487,11 +1228,6 @@ def main() -> None:
     os_kind = detect_os()
     if os_kind == "wsl":
         os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
-    elif os_kind == "mac":
-        # Explicitly set the Qt platform plugin for macOS
-        os.environ.setdefault("QT_QPA_PLATFORM", "cocoa")
-        # Critical macOS settings for VTK/Qt integration
-        os.environ.setdefault("QT_MAC_WANTS_LAYER", "1")
 
     input_file = None
     for arg in sys.argv[1:]:
@@ -1501,23 +1237,9 @@ def main() -> None:
         break
 
     app = QtWidgets.QApplication(sys.argv)
-    
-    # On macOS, we need to create the window first before showing file dialog
-    # to ensure proper Qt event loop initialization
     if input_file is None:
-        if os_kind == "mac":
-            # Create a temporary window to initialize Qt properly on Mac
-            temp_window = QtWidgets.QWidget()
-            temp_window.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.CustomizeWindowHint)
-            temp_window.resize(0, 0)
-            temp_window.show()
-            temp_window.hide()
-            app.processEvents()
-        
         options = QtWidgets.QFileDialog.Options()
-        # Use native dialog on Mac for better integration
-        if os_kind != "mac":
-            options |= QtWidgets.QFileDialog.DontUseNativeDialog
+        options |= QtWidgets.QFileDialog.DontUseNativeDialog
         input_file, _ = QtWidgets.QFileDialog.getOpenFileName(
             None,
             "Open VTK Mesh",
