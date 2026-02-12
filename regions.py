@@ -671,8 +671,8 @@ def compute_segment_ids(
         blocked |= segments[4] or set()
 
     seg5_deps = ["LAA1_LAA2_anterior", "LAA1_LAA2_posterior"]
-    if {"X1_X2_anterior", "X1_X2_posterior"}.issubset(geodesic_lines.keys()):
-        seg5_deps.extend(["X1_X2_anterior", "X1_X2_posterior"])
+    if {"X1_X2", "X2_X3", "X3_X1"}.issubset(geodesic_lines.keys()):
+        seg5_deps.extend(["X1_X2", "X2_X3", "X3_X1"])
     seg5, error_message, debug_points = compute_segment_with_fallback(
         5,
         seg5_deps,
