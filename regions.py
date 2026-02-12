@@ -634,7 +634,15 @@ def compute_segment_ids(
     if segments.get(3):
         blocked |= segments[3] or set()
 
-    seg4_deps = ("AC", "AF", "CE", "EF_aniso")
+    seg4_deps = (
+        "AC",
+        "CE",
+        "EF_aniso",
+        "A_LAA3",
+        "LAA1_LAA2_anterior",
+        "LAA1_LAA2_posterior",
+        "F_LAA4",
+    )
     seg4, error_message, debug_points = compute_segment_with_fallback(
         4,
         seg4_deps,
@@ -685,13 +693,19 @@ def compute_segment_ids(
         segments[5] = seg5
         blocked |= seg5
 
-    seg6_deps = ["AB_anterior", "AF", "BH", "FH_aniso"]
-    if {"LAA1_LAA2_anterior", "LAA1_LAA2_posterior"}.issubset(geodesic_lines.keys()):
-        seg6_deps.extend(["LAA1_LAA2_anterior", "LAA1_LAA2_posterior"])
+    seg6_deps = [
+        "AB_anterior",
+        "BH",
+        "FH_aniso",
+        "A_LAA3",
+        "LAA1_LAA2_anterior",
+        "LAA1_LAA2_posterior",
+        "F_LAA4",
+    ]
     seg6, error_message, debug_points = compute_segment_with_fallback(
         6,
         seg6_deps,
-        opposite_key="E",
+        opposite_key="I",
         seed_key="B",
         blocked_ids=blocked if blocked else None,
         required_landmarks={"A", "B", "C", "D", "E", "F", "H", "I"},
