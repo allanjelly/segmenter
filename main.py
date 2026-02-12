@@ -326,6 +326,7 @@ class MainWindow(QtWidgets.QMainWindow):
             
             {"key": "X1", "label": "    X1: LAA/LSPV cut point 1"},
             {"key": "X2", "label": "    X2: LAA/LSPV cut point 2"},
+            {"key": "X3", "label": "    X3: LAA/LSPV cut point 3"},
         ]
 
     def _populate_steps(self) -> None:
@@ -606,8 +607,9 @@ class MainWindow(QtWidgets.QMainWindow):
             ("DI", {"D", "I"}),
             ("LAA1_LAA2_anterior", {"LAA1", "LAA2", "D", "F"}),
             ("LAA1_LAA2_posterior", {"LAA1", "LAA2", "D", "F"}),
-            ("X1_X2_anterior", {"X1", "X2", "D", "F"}),
-            ("X1_X2_posterior", {"X1", "X2", "D", "F"}),
+            ("X1_X2", {"X1", "X2"}),
+            ("X2_X3", {"X2", "X3"}),
+            ("X3_X1", {"X3", "X1"}),
             ("EF_aniso", {"E", "F", "H", "I"}),
             ("FH_aniso", {"E", "F", "H", "I"}),
             ("HI_aniso", {"E", "F", "H", "I"}),
@@ -898,27 +900,29 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             changed_geodesics.update(updated)
 
-        if "X1" not in self._landmarks or "X2" not in self._landmarks:
-            self._remove_geodesic("X1_X2_anterior")
-            self._remove_geodesic("X1_X2_posterior")
-        elif (
-            {"X1", "X2", "D", "F"} & changed_landmarks
-            or not {"X1_X2_anterior", "X1_X2_posterior"}.issubset(
-                self._geodesic_lines.keys()
-            )
+        if (
+            "X1" in self._landmarks
+            and "X2" in self._landmarks
+            and ({"X1", "X2"} & changed_landmarks or "X1_X2" not in self._geodesic_lines)
         ):
-            updated, ok = self._update_landmark_pair_geodesics(
-                "X1",
-                "X2",
-                ("X1", "X2", "D"),
-                "X1_X2",
-                primary_color=(0.8, 0.8, 0.2),
-                alternate_color=(0.2, 0.8, 0.8),
-                line_width=6.0,
-                anterior_ref_key="F",
-                plane_origin_key="D",
-            )
-            changed_geodesics.update(updated)
+            if self._update_simple_geodesic("X1_X2", "X1", "X2", (0.8, 0.8, 0.2), 6.0):
+                changed_geodesics.add("X1_X2")
+
+        if (
+            "X2" in self._landmarks
+            and "X3" in self._landmarks
+            and ({"X2", "X3"} & changed_landmarks or "X2_X3" not in self._geodesic_lines)
+        ):
+            if self._update_simple_geodesic("X2_X3", "X2", "X3", (0.8, 0.8, 0.2), 6.0):
+                changed_geodesics.add("X2_X3")
+
+        if (
+            "X3" in self._landmarks
+            and "X1" in self._landmarks
+            and ({"X3", "X1"} & changed_landmarks or "X3_X1" not in self._geodesic_lines)
+        ):
+            if self._update_simple_geodesic("X3_X1", "X3", "X1", (0.8, 0.8, 0.2), 6.0):
+                changed_geodesics.add("X3_X1")
 
         has_ma_points = {"E", "F", "H", "I"}.issubset(self._landmarks.keys())
         if not has_ma_points:
